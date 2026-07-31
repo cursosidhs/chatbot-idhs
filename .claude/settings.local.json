@@ -8,7 +8,8 @@
       "WebSearch",
       "WebFetch(domain:developers.facebook.com)",
       "WebFetch(domain:pickyassist.com)",
-      "WebFetch(domain:dualhook.com)"
+      "WebFetch(domain:dualhook.com)",
+      "WebFetch(domain:ai.google.dev)"
     ]
   }
 }

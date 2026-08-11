@@ -62,6 +62,23 @@ Si la verificación falla, revisá que el server esté corriendo y que el verify
 
 Desde tu celular, mandale un WhatsApp al número de prueba/producción configurado en Meta. El bot debería responder usando Gemini.
 
+## Búsqueda de cursos
+
+Además de responder, el bot puede buscar en la oferta académica real del instituto (scrapeando `https://idhs.org.ar/cursos-inscripcion/`) y devolver el link específico del curso que el usuario está preguntando.
+
+Cómo funciona (`src/coursesStore.js`):
+1. **Gate por palabras clave**: antes de llamar a Gemini, `looksLikeCourseQuery` revisa el mensaje entrante (sin importar tildes) buscando términos como "curso", "diplomatura", "taller", "inscripción", etc. Si el mensaje no parece sobre cursos, no se scrapea nada ni se agrega contexto extra — esto evita gastar tokens/rate-limit de Gemini en mensajes que no lo necesitan.
+2. **Scraping + cache en memoria**: si el mensaje matchea, `getCourses()` devuelve el listado desde una cache en memoria (mismo patrón que `conversationStore.js`: sin persistencia, se resetea al reiniciar el proceso). Si la cache está vacía o vencida (`COURSES_CACHE_TTL_HOURS`, 12h por defecto), scrapea la página en ese momento y la vuelve a llenar. Llamadas concurrentes durante ese refresh comparten el mismo fetch en curso, así que no dispara múltiples scrapes en paralelo. Se excluyen los cursos con estado "Finalizado".
+3. **Inyección al prompt**: el listado (título + link, y el estado si no es "Inscripción Abierta") se agrega al mensaje que se le manda a Gemini para esa llamada puntual — no se guarda en el historial de la conversación, así no se reenvía en cada turno siguiente. El `systemInstruction` de `src/gemini.js` le indica al modelo que use únicamente los cursos de ese bloque y no invente links.
+
+Por qué así y no con un cron o una base de datos: en el free tier de Render el servicio se duerme a los 15 min de inactividad y tiene un tope de 750h/mes — un cron que lo despierte periódicamente para refrescar un cache quemaría horas gratis sin necesidad. La cache lazy con TTL logra lo mismo (evitar pegarle al sitio en cada mensaje) sin infraestructura extra, consistente con la filosofía "sin DB, todo en memoria" del proyecto.
+
+Si la página cambia de estructura (clases CSS, HTML) el scraper puede dejar de encontrar cursos — en ese caso `getCourses()` loggea el error y sirve lo último cacheado (o una lista vacía si nunca pudo scrapear), sin tirar abajo el manejo del webhook.
+
+Variables relacionadas (`.env`):
+- `COURSES_URL`: URL de la página de listado a scrapear (default `https://idhs.org.ar/cursos-inscripcion/`).
+- `COURSES_CACHE_TTL_HOURS`: horas que se sirve la cache antes de volver a scrapear (default 12).
+
 ## Comportamiento del bot
 
 1. **Solo responde al arrancar la conversación**: el bot contesta durante los primeros `BOT_RESPONSE_WINDOW_MINUTES` (10 por defecto) desde el primer mensaje del cliente en una conversación. Pasado ese tiempo, queda en silencio para ese número hasta que se abra una conversación nueva.
@@ -80,5 +97,6 @@ Desde tu celular, mandale un WhatsApp al número de prueba/producción configura
 ## Notas
 
 - El historial de conversación se guarda en memoria (`src/conversationStore.js`) y se pierde si el server reinicia. Para algo persistente, reemplazar por Redis/SQLite.
+- El cache de cursos (`src/coursesStore.js`) también es en memoria y se pierde al reiniciar; el próximo mensaje que pregunte por cursos dispara un nuevo scrape automáticamente.
 - Las conversaciones iniciadas por el usuario son gratis dentro de la ventana de 24 h. Si querés escribir primero vos, necesitás un template aprobado (con costo).
-- El plan free de Render "duerme" el servicio tras inactividad; el primer mensaje después de un tiempo puede tardar unos segundos en responder mientras arranca.
+- El plan free de Render "duerme" el servicio tras inactividad; el primer mensaje después de un tiempo puede tardar unos segundos en responder mientras arranca (y, si además pregunta por cursos, un poco más por el scrape).

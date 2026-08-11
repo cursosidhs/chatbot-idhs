@@ -13,6 +13,11 @@ import {
   registerInboundMessage,
   shouldBotRespond,
 } from "./src/conversationStore.js";
+import {
+  formatCoursesForPrompt,
+  getCourses,
+  looksLikeCourseQuery,
+} from "./src/coursesStore.js";
 
 const app = express();
 
@@ -62,7 +67,18 @@ app.post("/webhook", async (req, res) => {
 
   try {
     const history = getHistory(from);
-    const reply = await generateReply(history, text);
+
+    // Only fetch/inject the course list when the message looks like it's
+    // asking about one — keeps token usage (and Gemini free-tier RPM/TPM
+    // budget) down on the messages that don't need it.
+    let coursesContext;
+    if (looksLikeCourseQuery(text)) {
+      const courses = await getCourses();
+      coursesContext = formatCoursesForPrompt(courses);
+    }
+
+    const reply = await generateReply(history, text, coursesContext);
+    console.log("Gemini reply:", reply);
     appendTurn(from, text, reply);
     await sendTextMessage(from, reply);
   } catch (err) {

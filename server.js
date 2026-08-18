@@ -7,7 +7,8 @@ import {
   sendTextMessage,
 } from "./src/whatsapp.js";
 import {
-  appendTurn,
+  appendBotMessage,
+  appendUserMessage,
   getHistory,
   markHandedOff,
   registerInboundMessage,
@@ -18,6 +19,8 @@ import {
   getCourses,
   looksLikeCourseQuery,
 } from "./src/coursesStore.js";
+import { initSchema } from "./src/db.js";
+import { inboxRouter } from "./src/inbox.js";
 
 const app = express();
 
@@ -56,17 +59,23 @@ app.post("/webhook", async (req, res) => {
   // An employee sent this from the WhatsApp Business app (coexistence).
   // Hand the conversation off to them and never speak in it again this session.
   if (event.type === "echo") {
-    markHandedOff(event.to);
+    markHandedOff(event.to).catch((err) =>
+      console.error("Error marking conversation handed off:", err)
+    );
     return;
   }
 
   const { from, text } = event;
-  registerInboundMessage(from);
-
-  if (!shouldBotRespond(from)) return;
 
   try {
-    const history = getHistory(from);
+    const convo = await registerInboundMessage(from);
+
+    // History is read before the new message is stored, so the model gets
+    // prior turns as context and the new text as the actual prompt.
+    const history = await getHistory(from);
+    await appendUserMessage(from, text);
+
+    if (!shouldBotRespond(convo)) return;
 
     // Only fetch/inject the course list when the message looks like it's
     // asking about one — keeps token usage (and Gemini free-tier RPM/TPM
@@ -79,16 +88,22 @@ app.post("/webhook", async (req, res) => {
 
     const reply = await generateReply(history, text, coursesContext);
     console.log("Gemini reply:", reply);
-    appendTurn(from, text, reply);
+    await appendBotMessage(from, reply);
     await sendTextMessage(from, reply);
   } catch (err) {
     console.error("Error handling incoming message:", err);
   }
 });
 
+app.use("/inbox", inboxRouter);
+
 app.get("/", (_req, res) => {
   res.send("WhatsApp Gemini bot is running.");
 });
+
+// Assert the schema before accepting traffic, so a request never hits a
+// missing table on a fresh database.
+await initSchema();
 
 app.listen(config.port, () => {
   console.log(`Server listening on port ${config.port}`);

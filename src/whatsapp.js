@@ -4,19 +4,23 @@ import { config } from "./config.js";
 const GRAPH_API_BASE = "https://graph.facebook.com/v20.0";
 
 export function isValidSignature(rawBody, signatureHeader) {
-  if (!signatureHeader) return false;
+  if (!signatureHeader || !rawBody) return false;
 
   const expected = crypto
     .createHmac("sha256", config.whatsappAppSecret)
     .update(rawBody)
-    .digest("hex");
+    .digest();
 
-  const received = signatureHeader.replace("sha256=", "");
+  // Buffer.from(..., "hex") silently truncates on malformed input, so a
+  // junk header yields a short buffer rather than throwing here.
+  const received = Buffer.from(signatureHeader.replace("sha256=", ""), "hex");
 
-  return crypto.timingSafeEqual(
-    Buffer.from(expected, "hex"),
-    Buffer.from(received, "hex")
-  );
+  // timingSafeEqual THROWS when the lengths differ, and this runs outside
+  // any try/catch in server.js — without this guard, one malformed
+  // signature header crashes the whole process.
+  if (received.length !== expected.length) return false;
+
+  return crypto.timingSafeEqual(expected, received);
 }
 
 export async function sendTextMessage(to, text) {

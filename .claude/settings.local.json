@@ -10,7 +10,15 @@
       "WebFetch(domain:pickyassist.com)",
       "WebFetch(domain:dualhook.com)",
       "WebFetch(domain:ai.google.dev)",
-      "WebFetch(domain:www.abcsales.ai)"
+      "WebFetch(domain:www.abcsales.ai)",
+      "Bash(mkdir -p \"C:/Users/IDHS/AppData/Local/Temp/claude/c--Users-IDHS-Desktop-Repositorios-whatsapp-bot/bb0e7e99-6f58-4694-a572-a993ff0b6978/scratchpad/sqltest\")",
+      "Bash(npm init *)",
+      "Bash(node test.mjs)",
+      "Bash(DATABASE_URL=postgresql://u:p@localhost/x INBOX_PASSWORD=s3cret WHATSAPP_TOKEN=t WHATSAPP_PHONE_NUMBER_ID=t WHATSAPP_VERIFY_TOKEN=t WHATSAPP_APP_SECRET=t GEMINI_API_KEY=t node -e ' *)",
+      "Bash(node server.js)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" http://127.0.0.1:3999/)",
+      "Bash(WHATSAPP_APP_SECRET=appsecret123 DATABASE_URL=postgresql://u:p@localhost/x INBOX_PASSWORD=x WHATSAPP_TOKEN=t WHATSAPP_PHONE_NUMBER_ID=t WHATSAPP_VERIFY_TOKEN=t GEMINI_API_KEY=t node -e ' *)",
+      "Bash(node e2e-harness.mjs)"
     ]
   }
 }

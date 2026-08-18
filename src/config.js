@@ -20,4 +20,7 @@ export const config = {
   sessionGapMs: Number(process.env.BOT_SESSION_GAP_HOURS || 6) * 60 * 60 * 1000,
   coursesUrl: process.env.COURSES_URL || "https://idhs.org.ar/cursos-inscripcion/",
   coursesCacheTtlMs: Number(process.env.COURSES_CACHE_TTL_HOURS || 12) * 60 * 60 * 1000,
+  databaseUrl: required("DATABASE_URL"),
+  inboxUser: process.env.INBOX_USER || "idhs",
+  inboxPassword: required("INBOX_PASSWORD"),
 };

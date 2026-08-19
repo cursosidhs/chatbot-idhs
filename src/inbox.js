@@ -19,6 +19,13 @@ const ROLE_LABELS = {
   agent: "Empleado",
 };
 
+// Agent messages show who sent them; everything older than multi-user
+// support (author IS NULL) still reads as the generic "Empleado".
+function authorLabel(role, author) {
+  if (role === "agent" && author) return author;
+  return ROLE_LABELS[role] ?? role;
+}
+
 // Hashing first means differing lengths don't throw and don't leak length
 // through timing, unlike comparing the raw strings.
 function safeEqual(a, b) {
@@ -34,7 +41,17 @@ function requireAuth(req, res, next) {
   if (scheme === "Basic" && encoded) {
     const [user, ...rest] = Buffer.from(encoded, "base64").toString().split(":");
     const password = rest.join(":");
-    if (safeEqual(user, config.inboxUser) && safeEqual(password, config.inboxPassword)) {
+
+    // Checks every configured user without breaking out early, so how long
+    // this takes doesn't reveal which names exist.
+    let matched = null;
+    for (const candidate of config.inboxUsers) {
+      const hit = safeEqual(user, candidate.name) && safeEqual(password, candidate.password);
+      if (hit) matched = candidate;
+    }
+
+    if (matched) {
+      req.inboxAuthor = matched.name;
       return next();
     }
   }
@@ -64,6 +81,35 @@ function formatTime(date) {
   });
 }
 
+// Polls by reloading the page, but never at the cost of losing work:
+// a half-written reply, or a hidden tab (a background tab reloading every
+// 30s would hold Render's free instance awake — and its 750 h/month
+// budget — for nothing). Deliberately not <meta http-equiv="refresh">,
+// which can't be conditional and would wipe a draft mid-sentence.
+const autoRefreshScript = `
+<script>
+(function () {
+  var everyMs = ${Number(config.inboxRefreshSeconds) * 1000};
+  if (!everyMs) return;
+
+  function shouldSkip() {
+    if (document.hidden) return true;
+    // Never reload out from under someone mid-typing: a half-written reply,
+    // or a search box being used (reloading would drop what they typed and
+    // bounce them back to the unfiltered list).
+    var fields = document.querySelectorAll("textarea, input[type=search]");
+    for (var i = 0; i < fields.length; i++) {
+      if (fields[i].value.trim() !== "" || document.activeElement === fields[i]) return true;
+    }
+    return false;
+  }
+
+  setInterval(function () {
+    if (!shouldSkip()) location.reload();
+  }, everyMs);
+})();
+</script>`;
+
 function layout(title, body) {
   return `<!doctype html>
 <html lang="es">
@@ -89,6 +135,11 @@ function layout(title, body) {
   .msg.model { background: #2f7d5b33; margin-left: auto; }
   .msg.agent { background: #2f5f9e33; margin-left: auto; }
   form { display: flex; gap: .5rem; margin-top: 1rem; }
+  form.search { margin: .5rem 0 1rem; align-items: center; flex-wrap: wrap; }
+  input[type="search"] { flex: 1; min-width: 10rem; font: inherit; padding: .5rem;
+             border-radius: .5rem; border: 1px solid #8886; background: transparent;
+             color: inherit; }
+  .clear { font-size: .85rem; opacity: .7; }
   textarea { flex: 1; min-height: 3.5rem; font: inherit; padding: .5rem;
              border-radius: .5rem; border: 1px solid #8886; background: transparent;
              color: inherit; }
@@ -99,7 +150,7 @@ function layout(title, body) {
           border-radius: .5rem; font-size: .85rem; }
 </style>
 </head>
-<body>${body}</body>
+<body>${body}${autoRefreshScript}</body>
 </html>`;
 }
 
@@ -108,12 +159,13 @@ export const inboxRouter = express.Router();
 inboxRouter.use(requireAuth);
 inboxRouter.use(express.urlencoded({ extended: false }));
 
-inboxRouter.get("/", async (_req, res) => {
-  const convos = await listConversations();
+inboxRouter.get("/", async (req, res) => {
+  const search = typeof req.query.q === "string" ? req.query.q : "";
+  const convos = await listConversations({ search });
 
   const items = convos
     .map((c) => {
-      const who = ROLE_LABELS[c.last_role] ?? "";
+      const who = authorLabel(c.last_role, c.last_author);
       const preview = c.last_text ? `${who}: ${c.last_text}` : "(sin mensajes)";
       const badge = c.handed_off ? '<span class="badge">atendido por humano</span>' : "";
       return `<li><a href="/inbox/${encodeURIComponent(c.wa_id)}">
@@ -124,12 +176,29 @@ inboxRouter.get("/", async (_req, res) => {
     })
     .join("");
 
+  const searchBox = `
+    <form class="search" method="get" action="/inbox">
+      <input type="search" name="q" value="${escapeHtml(search)}"
+             placeholder="Buscar por número o texto…" aria-label="Buscar conversaciones">
+      <button type="submit">Buscar</button>
+      ${search ? '<a class="clear" href="/inbox">Limpiar</a>' : ""}
+    </form>`;
+
+  let results;
+  if (convos.length) {
+    results = `<ul class="convos">${items}</ul>`;
+  } else if (search) {
+    results = `<p>Ningún resultado para <strong>${escapeHtml(search)}</strong>.</p>`;
+  } else {
+    results = "<p>Todavía no hay conversaciones.</p>";
+  }
+
+  const heading = search
+    ? `${convos.length} resultado${convos.length === 1 ? "" : "s"}`
+    : "Conversaciones";
+
   res.send(
-    layout(
-      "Conversaciones",
-      `<h1>Conversaciones</h1>
-       ${convos.length ? `<ul class="convos">${items}</ul>` : "<p>Todavía no hay conversaciones.</p>"}`
-    )
+    layout("Conversaciones", `<h1>${escapeHtml(heading)}</h1>${searchBox}${results}`)
   );
 });
 
@@ -142,7 +211,7 @@ inboxRouter.get("/:waId", async (req, res) => {
   const messages = convo.messages
     .map(
       (m) => `<div class="msg ${m.role}">
-        <div class="meta">${escapeHtml(ROLE_LABELS[m.role] ?? m.role)} · ${escapeHtml(formatTime(m.created_at))}</div>
+        <div class="meta">${escapeHtml(authorLabel(m.role, m.author))} · ${escapeHtml(formatTime(m.created_at))}</div>
         ${escapeHtml(m.text)}
       </div>`
     )
@@ -158,13 +227,19 @@ inboxRouter.get("/:waId", async (req, res) => {
        </form>
        <p class="meta">Al responder, el bot deja de contestar en esta conversación.</p>`;
 
+  // Jump to the newest message (and the reply box right under it) instead
+  // of landing at the top of a long thread — otherwise every auto-refresh
+  // would scroll the employee away from what they were reading.
+  const scrollToLatest = `<script>window.scrollTo(0, document.body.scrollHeight);</script>`;
+
   res.send(
     layout(
       `Conversación ${convo.wa_id}`,
       `<p><a href="/inbox">← Volver</a></p>
        <h1>${escapeHtml(convo.wa_id)}</h1>
        ${messages}
-       ${form}`
+       ${form}
+       ${scrollToLatest}`
     )
   );
 });
@@ -176,7 +251,7 @@ inboxRouter.post("/:waId/reply", async (req, res) => {
 
   try {
     await sendTextMessage(waId, text);
-    await appendAgentMessage(waId, text);
+    await appendAgentMessage(waId, text, req.inboxAuthor);
   } catch (err) {
     console.error("Error sending agent reply:", err);
     return res

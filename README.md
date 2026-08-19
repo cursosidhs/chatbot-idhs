@@ -99,19 +99,33 @@ Variables relacionadas (`.env`):
 
 Para que una persona del equipo pueda leer y responder conversaciones sin necesitar la app de WhatsApp Business ni un servicio externo tipo Chatwoot, el mismo server expone una bandeja simple en `https://<tu-dominio>/inbox`.
 
-- **Acceso**: HTTP Basic Auth con `INBOX_USER` / `INBOX_PASSWORD`. Andá directo a la URL y el navegador pide usuario y contraseña.
+- **Acceso**: HTTP Basic Auth. En `INBOX_USERS` ponés un `nombre:contraseña` por empleado, separados por comas (`maria:clave1,juan:clave2`). Cada uno entra con lo suyo.
+- **Quién respondió**: el nombre con el que entró queda guardado en cada mensaje que manda, y se muestra en el hilo y en el listado ("maria: te confirmo por mail") en vez de un genérico "Empleado". Los mensajes anteriores a esto siguen apareciendo como "Empleado".
+- **Buscar**: el cuadro de arriba del listado busca por número de teléfono o por el texto de cualquier mensaje de la conversación, sin distinguir mayúsculas. Cuando buscás, la vista previa muestra **el mensaje que coincidió**, no el último — si no, un resultado por "ayurveda" te mostraría un "gracias" suelto y parecería un falso positivo.
 - **Listado**: conversaciones ordenadas por el último mensaje del cliente, con vista previa y una etiqueta "atendido por humano" en las que ya tomó un empleado.
-- **Detalle**: el hilo completo, distinguiendo Cliente / Bot / Empleado, más un cuadro de texto para responder.
+- **Detalle**: el hilo completo, distinguiendo Cliente / Bot / nombre del empleado, más un cuadro de texto para responder.
 - **Al responder**: el mensaje sale por la Cloud API y la conversación queda marcada como `handed_off`, así que **el bot deja de contestar ahí** por el resto de la sesión (mismo efecto que la regla 3, pero disparado desde el panel en vez de por un echo de coexistence).
 - **Ventana de 24 h**: si pasaron más de 24 h desde el último mensaje del cliente, el formulario se reemplaza por un aviso. WhatsApp no deja mandar texto libre fuera de esa ventana — haría falta una plantilla aprobada (con costo), que este panel todavía no envía.
+- **Se actualiza sola cada 30 s** (`INBOX_REFRESH_SECONDS`, `0` la desactiva), así el empleado puede dejar la pestaña abierta. La recarga se saltea cuando podría molestar o costar plata:
+  - si hay una respuesta a medio escribir, o algo tipeado en el buscador, o el cursor está en alguno de los dos (no te pisa el borrador ni te devuelve al listado sin filtrar);
+  - si la pestaña está en segundo plano — una pestaña olvidada recargando sola mantendría despierto el servicio de Render y quemaría las 750 h/mes del plan free al pedo.
+
+  En el detalle, después de cada carga la página baja sola al último mensaje, así no perdés de vista lo nuevo en conversaciones largas.
 
 Todos los mensajes entrantes se guardan **siempre**, incluso cuando el bot decide no responder. Es justamente el caso donde un humano necesita leer la conversación, así que una conversación derivada nunca aparece vacía en la bandeja.
 
+### Limitaciones que conviene tener presentes
+
+- **No hay notificaciones.** No suena el celular ni llega un mail cuando entra un mensaje. Con la pestaña abierta se actualiza sola, pero si la cierra, el empleado tiene que acordarse de volver a entrar. Es la diferencia más grande contra la app de WhatsApp Business.
+- **Cold start.** En el plan free de Render, si nadie usó el servicio en 15 min, la primera carga de `/inbox` puede tardar 30-60 s mientras arranca.
+- **La búsqueda recorre la tabla entera.** Con miles de mensajes sigue siendo instantánea; recién con cientos de miles convendría un índice de texto completo. No es un problema a la escala del instituto.
+
 ### Seguridad
 
-Quien tenga la contraseña de `/inbox` puede enviar WhatsApps en nombre del instituto. Dos cosas a tener en cuenta:
-- Usá una contraseña larga y no la compartas por el mismo WhatsApp.
+Quien tenga una contraseña de `/inbox` puede enviar WhatsApps en nombre del instituto. Tres cosas a tener en cuenta:
+- Una contraseña por persona, larga, y que no circule por el mismo WhatsApp. Si alguien se va del instituto, le borrás su entrada de `INBOX_USERS` sin tocarle la clave al resto.
 - Basic Auth manda las credenciales en cada request, así que **esto depende de HTTPS**. Render sirve HTTPS por defecto; no lo expongas por HTTP plano (ni por ngrok sin TLS).
+- El nombre de autor sirve para saber quién respondió de buena fe, no para auditar a alguien que quiera esconderse: quien conozca la contraseña de otra persona puede escribir con su nombre.
 
 ## Comportamiento del bot
 

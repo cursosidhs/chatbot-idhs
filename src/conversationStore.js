@@ -99,15 +99,15 @@ export async function appendBotMessage(waId, text) {
 // echoes). Deliberately does NOT touch last_message_at — that column
 // tracks the customer's last message, which is what both the session-gap
 // rule and the 24h billing window are measured from.
-export async function appendAgentMessage(waId, text) {
+export async function appendAgentMessage(waId, text, author = null) {
   // Needs a single checked-out client: pool.query() can hand each
   // statement a different connection, which would break the transaction.
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
     await client.query(
-      "INSERT INTO messages (wa_id, role, text) VALUES ($1, 'agent', $2)",
-      [waId, text]
+      "INSERT INTO messages (wa_id, role, text, author) VALUES ($1, 'agent', $2, $3)",
+      [waId, text, author]
     );
     await client.query(
       "UPDATE conversations SET handed_off = TRUE WHERE wa_id = $1",
@@ -122,22 +122,43 @@ export async function appendAgentMessage(waId, text) {
   }
 }
 
-export async function listConversations(limit = 50) {
+// `%` and `_` are wildcards to ILIKE, so a search for "50%" or "curso_1"
+// would silently match far more than the employee typed. Escaping them
+// (and the escape character itself) keeps the search literal.
+function toLikePattern(term) {
+  return `%${term.replace(/[\\%_]/g, (char) => `\\${char}`)}%`;
+}
+
+// `search` matches the phone number or any message in the conversation.
+// When searching, the preview shows the message that actually matched
+// rather than the latest one — otherwise a hit on "ayurveda" would preview
+// an unrelated "gracias" and look like a false positive.
+export async function listConversations({ limit = 50, search = "" } = {}) {
+  const term = search.trim() ? toLikePattern(search.trim()) : null;
+
   const { rows } = await pool.query(
     `
     SELECT c.wa_id, c.last_message_at, c.handed_off,
-           m.text AS last_text, m.role AS last_role
+           m.text AS last_text, m.role AS last_role, m.author AS last_author
     FROM conversations c
     LEFT JOIN LATERAL (
-      SELECT text, role FROM messages
+      SELECT text, role, author FROM messages
       WHERE wa_id = c.wa_id
-      ORDER BY created_at DESC, id DESC
+      ORDER BY
+        CASE WHEN $2::text IS NOT NULL AND text ILIKE $2 ESCAPE '\\' THEN 0 ELSE 1 END,
+        created_at DESC, id DESC
       LIMIT 1
     ) m ON TRUE
+    WHERE $2::text IS NULL
+       OR c.wa_id ILIKE $2 ESCAPE '\\'
+       OR EXISTS (
+            SELECT 1 FROM messages
+            WHERE wa_id = c.wa_id AND text ILIKE $2 ESCAPE '\\'
+          )
     ORDER BY c.last_message_at DESC
     LIMIT $1
     `,
-    [limit]
+    [limit, term]
   );
 
   return rows;
@@ -150,7 +171,7 @@ export async function getConversation(waId) {
       [waId]
     ),
     pool.query(
-      "SELECT role, text, created_at FROM messages WHERE wa_id = $1 ORDER BY created_at ASC, id ASC",
+      "SELECT role, text, author, created_at FROM messages WHERE wa_id = $1 ORDER BY created_at ASC, id ASC",
       [waId]
     ),
   ]);

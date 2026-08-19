@@ -38,5 +38,10 @@ export async function initSchema() {
 
     CREATE INDEX IF NOT EXISTS messages_wa_id_created_at_idx
       ON messages (wa_id, created_at DESC);
+
+    -- Which employee sent an 'agent' message. NULL on rows written before
+    -- multi-user support existed, and on 'user'/'model' rows; the inbox
+    -- falls back to the generic "Empleado" label when it's missing.
+    ALTER TABLE messages ADD COLUMN IF NOT EXISTS author TEXT;
   `);
 }

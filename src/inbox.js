@@ -1,11 +1,16 @@
 import crypto from "node:crypto";
 import express from "express";
 import { config } from "./config.js";
-import { sendTextMessage } from "./whatsapp.js";
+import { sendTextMessage, sendTemplateMessage } from "./whatsapp.js";
 import {
   appendAgentMessage,
   getConversation,
+  getMedia,
+  isOptedOut,
   listConversations,
+  logOutboundContact,
+  registerOutboundContact,
+  setOptedOut,
 } from "./conversationStore.js";
 
 // Meta only lets you send free-form messages within 24h of the customer's
@@ -26,6 +31,23 @@ function authorLabel(role, author) {
   return ROLE_LABELS[role] ?? role;
 }
 
+// A customer controls the mime type of anything they send. Rendering an
+// attacker-supplied text/html inline, on our own origin, would be stored XSS
+// with the employee's session — so only these types are ever served inline,
+// and everything else is forced to download as an opaque binary.
+const INLINE_SAFE = [/^image\//, /^audio\//, /^video\//, /^application\/pdf$/];
+
+function isInlineSafe(mimeType) {
+  return INLINE_SAFE.some((pattern) => pattern.test(mimeType));
+}
+
+// Quotes, newlines and non-ASCII would let a filename break out of the
+// Content-Disposition header, so the fallback keeps only tame characters.
+function safeFilename(filename, fallback) {
+  const cleaned = String(filename ?? "").replace(/[^\w.\- ]+/g, "").trim();
+  return cleaned || fallback;
+}
+
 // Hashing first means differing lengths don't throw and don't leak length
 // through timing, unlike comparing the raw strings.
 function safeEqual(a, b) {
@@ -34,7 +56,7 @@ function safeEqual(a, b) {
   return crypto.timingSafeEqual(ha, hb);
 }
 
-function requireAuth(req, res, next) {
+export function requireAuth(req, res, next) {
   const header = req.get("authorization") ?? "";
   const [scheme, encoded] = header.split(" ");
 
@@ -148,6 +170,14 @@ function layout(title, body) {
   button[disabled] { opacity: .5; cursor: not-allowed; }
   .warn { background: #b4530022; border: 1px solid #b4530066; padding: .6rem .8rem;
           border-radius: .5rem; font-size: .85rem; }
+  form.newcontact { flex-direction: column; align-items: stretch; max-width: 26rem; }
+  form.newcontact label { display: flex; flex-direction: column; gap: .25rem; font-size: .85rem; }
+  form.newcontact input[type="text"] { font: inherit; padding: .5rem; border-radius: .5rem;
+             border: 1px solid #8886; background: transparent; color: inherit; }
+  .toolbar { display: flex; justify-content: space-between; align-items: center; gap: .5rem; }
+  img.media { display: block; max-width: 100%; max-height: 20rem; border-radius: .4rem;
+              margin-top: .4rem; }
+  a.file { display: inline-block; margin-top: .4rem; }
 </style>
 </head>
 <body>${body}${autoRefreshScript}</body>
@@ -168,8 +198,9 @@ inboxRouter.get("/", async (req, res) => {
       const who = authorLabel(c.last_role, c.last_author);
       const preview = c.last_text ? `${who}: ${c.last_text}` : "(sin mensajes)";
       const badge = c.handed_off ? '<span class="badge">atendido por humano</span>' : "";
+      const optOutBadge = c.opted_out ? '<span class="badge">no contactar</span>' : "";
       return `<li><a href="/inbox/${encodeURIComponent(c.wa_id)}">
-        <strong>${escapeHtml(c.wa_id)}</strong>${badge}
+        <strong>${escapeHtml(c.wa_id)}</strong>${badge}${optOutBadge}
         <div class="meta">${escapeHtml(formatTime(c.last_message_at))}</div>
         <div>${escapeHtml(preview.slice(0, 120))}</div>
       </a></li>`;
@@ -197,9 +228,124 @@ inboxRouter.get("/", async (req, res) => {
     ? `${convos.length} resultado${convos.length === 1 ? "" : "s"}`
     : "Conversaciones";
 
+  const toolbar = `<div class="toolbar">
+    <h1>${escapeHtml(heading)}</h1>
+    <a href="/inbox/nuevo">+ Nuevo contacto</a>
+  </div>`;
+
+  res.send(layout("Conversaciones", `${toolbar}${searchBox}${results}`));
+});
+
+// Contactar primero a alguien que nunca escribió requiere una plantilla
+// aprobada por Meta — WhatsApp rechaza texto libre para business-initiated.
+inboxRouter.get("/nuevo", (_req, res) => {
   res.send(
-    layout("Conversaciones", `<h1>${escapeHtml(heading)}</h1>${searchBox}${results}`)
+    layout(
+      "Nuevo contacto",
+      `<p><a href="/inbox">← Volver</a></p>
+       <h1>Nuevo contacto</h1>
+       <p class="meta">Para escribirle primero a alguien que nunca te contactó, WhatsApp exige
+       una plantilla ya aprobada — no se puede mandar texto libre acá.</p>
+       <form class="newcontact" method="post" action="/inbox/nuevo">
+         <label>Número, con código de país, sin "+" ni espacios
+           <input type="text" name="wa_id" required pattern="[0-9]{8,15}" placeholder="5491133334444">
+         </label>
+         <label>Motivo (para tu propio registro, no se envía)
+           <input type="text" name="reason" placeholder="pago pendiente / clase no vista">
+         </label>
+         <label>Nombre exacto de la plantilla aprobada
+           <input type="text" name="template_name" required placeholder="recordatorio_pago">
+         </label>
+         <label>Variables de la plantilla en orden, separadas por "|" (dejar vacío si no tiene)
+           <input type="text" name="params" placeholder="Juan Pérez|Curso de Ayurveda">
+         </label>
+         <button type="submit">Enviar plantilla</button>
+       </form>`
+    )
   );
+});
+
+// Serves a stored photo/PDF from our own origin. Registered before
+// GET /:waId so "media" isn't mistaken for a phone number.
+inboxRouter.get("/media/:messageId", async (req, res) => {
+  if (!/^\d+$/.test(req.params.messageId)) return res.sendStatus(400);
+
+  const file = await getMedia(req.params.messageId);
+  if (!file) return res.status(404).send("Archivo no encontrado.");
+
+  const inline = isInlineSafe(file.mime_type);
+  const fallbackName = `archivo-${req.params.messageId}`;
+
+  // Anything not on the inline allowlist is downloaded as an opaque binary,
+  // and nosniff stops the browser from second-guessing that decision.
+  res.setHeader("Content-Type", inline ? file.mime_type : "application/octet-stream");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader(
+    "Content-Disposition",
+    `${inline ? "inline" : "attachment"}; filename="${safeFilename(file.filename, fallbackName)}"`
+  );
+
+  // res.end, not res.send: send() appends "; charset=utf-8" to the content
+  // type and JSON-serializes anything it doesn't recognize as a Buffer —
+  // and a driver may hand back bytea as a plain Uint8Array, which would
+  // arrive at the browser as `{"0":137,"1":80,...}` instead of a PNG.
+  const bytes = Buffer.isBuffer(file.bytes) ? file.bytes : Buffer.from(file.bytes);
+  res.setHeader("Content-Length", bytes.length);
+  res.end(bytes);
+});
+
+inboxRouter.post("/nuevo", async (req, res) => {
+  const waId = (req.body.wa_id ?? "").trim();
+  const reason = (req.body.reason ?? "").trim();
+  const templateName = (req.body.template_name ?? "").trim();
+  const params = (req.body.params ?? "").trim()
+    ? req.body.params.split("|").map((p) => p.trim())
+    : [];
+
+  if (!waId || !templateName) {
+    return res
+      .status(400)
+      .send(
+        layout(
+          "Nuevo contacto",
+          `<p class="warn">Falta el número o el nombre de la plantilla.</p>
+           <p><a href="/inbox/nuevo">← Volver</a></p>`
+        )
+      );
+  }
+
+  if (await isOptedOut(waId)) {
+    return res
+      .status(409)
+      .send(
+        layout(
+          "Nuevo contacto",
+          `<p class="warn">${escapeHtml(waId)} pidió no recibir más mensajes — no se envió nada.</p>
+           <p><a href="/inbox">← Volver</a></p>`
+        )
+      );
+  }
+
+  try {
+    await sendTemplateMessage(waId, templateName, params);
+    await registerOutboundContact(waId);
+    await logOutboundContact(waId, reason, templateName);
+    const sentText = `[Plantilla "${templateName}"]${params.length ? " " + params.join(" · ") : ""}`;
+    await appendAgentMessage(waId, sentText, req.inboxAuthor);
+  } catch (err) {
+    console.error("Error sending template:", err);
+    return res
+      .status(502)
+      .send(
+        layout(
+          "Nuevo contacto",
+          `<p class="warn">No se pudo enviar la plantilla: ${escapeHtml(err.message)}</p>
+           <p><a href="/inbox/nuevo">← Volver</a></p>`
+        )
+      );
+  }
+
+  res.redirect(`/inbox/${encodeURIComponent(waId)}`);
 });
 
 inboxRouter.get("/:waId", async (req, res) => {
@@ -209,12 +355,30 @@ inboxRouter.get("/:waId", async (req, res) => {
   const expired = Date.now() - new Date(convo.last_message_at) > SERVICE_WINDOW_MS;
 
   const messages = convo.messages
-    .map(
-      (m) => `<div class="msg ${m.role}">
+    .map((m) => {
+      let attachment = "";
+      if (m.media_kind) {
+        const href = `/inbox/media/${m.id}`;
+        if (m.media_mime_type && /^image\//.test(m.media_mime_type)) {
+          attachment = `<a href="${href}" target="_blank" rel="noopener">
+            <img class="media" src="${href}" alt="${escapeHtml(m.text)}" loading="lazy">
+          </a>`;
+        } else if (m.media_mime_type) {
+          const name = escapeHtml(m.media_filename || `${m.media_kind}`);
+          attachment = `<a class="file" href="${href}" target="_blank" rel="noopener">📎 ${name}</a>`;
+        } else {
+          // The row exists but the download failed — say so rather than
+          // rendering a broken link.
+          attachment = `<div class="meta">⚠️ El archivo no se pudo guardar. Pedíselo de nuevo al cliente.</div>`;
+        }
+      }
+
+      return `<div class="msg ${m.role}">
         <div class="meta">${escapeHtml(authorLabel(m.role, m.author))} · ${escapeHtml(formatTime(m.created_at))}</div>
         ${escapeHtml(m.text)}
-      </div>`
-    )
+        ${attachment}
+      </div>`;
+    })
     .join("");
 
   const form = expired
@@ -226,6 +390,15 @@ inboxRouter.get("/:waId", async (req, res) => {
          <button type="submit">Enviar</button>
        </form>
        <p class="meta">Al responder, el bot deja de contestar en esta conversación.</p>`;
+
+  // Opt-out only gates future outbound-template sends from "Nuevo contacto"
+  // — it never blocks a normal reply here, since the person may still be
+  // mid-conversation.
+  const optOut = convo.opted_out
+    ? `<p class="meta">🚫 Pidió no recibir más mensajes iniciados por nosotros.</p>`
+    : `<form method="post" action="/inbox/${encodeURIComponent(convo.wa_id)}/opt-out">
+         <button type="submit">Marcar "no contactar de nuevo"</button>
+       </form>`;
 
   // Jump to the newest message (and the reply box right under it) instead
   // of landing at the top of a long thread — otherwise every auto-refresh
@@ -239,6 +412,7 @@ inboxRouter.get("/:waId", async (req, res) => {
        <h1>${escapeHtml(convo.wa_id)}</h1>
        ${messages}
        ${form}
+       ${optOut}
        ${scrollToLatest}`
     )
   );
@@ -266,4 +440,9 @@ inboxRouter.post("/:waId/reply", async (req, res) => {
   }
 
   res.redirect(`/inbox/${encodeURIComponent(waId)}`);
+});
+
+inboxRouter.post("/:waId/opt-out", async (req, res) => {
+  await setOptedOut(req.params.waId, true);
+  res.redirect(`/inbox/${encodeURIComponent(req.params.waId)}`);
 });

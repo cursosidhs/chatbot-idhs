@@ -105,7 +105,7 @@ Para que una persona del equipo pueda leer y responder conversaciones sin necesi
 - **Listado**: conversaciones ordenadas por el último mensaje del cliente, con vista previa y una etiqueta "atendido por humano" en las que ya tomó un empleado.
 - **Detalle**: el hilo completo, distinguiendo Cliente / Bot / nombre del empleado, más un cuadro de texto para responder.
 - **Al responder**: el mensaje sale por la Cloud API y la conversación queda marcada como `handed_off`, así que **el bot deja de contestar ahí** por el resto de la sesión (mismo efecto que la regla 3, pero disparado desde el panel en vez de por un echo de coexistence).
-- **Ventana de 24 h**: si pasaron más de 24 h desde el último mensaje del cliente, el formulario se reemplaza por un aviso. WhatsApp no deja mandar texto libre fuera de esa ventana — haría falta una plantilla aprobada (con costo), que este panel todavía no envía.
+- **Ventana de 24 h**: si pasaron más de 24 h desde el último mensaje del cliente, el formulario se reemplaza por un aviso. WhatsApp no deja mandar texto libre fuera de esa ventana — haría falta una plantilla aprobada, que es justo lo que permite la pantalla de "Nuevo contacto" descripta abajo.
 - **Se actualiza sola cada 30 s** (`INBOX_REFRESH_SECONDS`, `0` la desactiva), así el empleado puede dejar la pestaña abierta. La recarga se saltea cuando podría molestar o costar plata:
   - si hay una respuesta a medio escribir, o algo tipeado en el buscador, o el cursor está en alguno de los dos (no te pisa el borrador ni te devuelve al listado sin filtrar);
   - si la pestaña está en segundo plano — una pestaña olvidada recargando sola mantendría despierto el servicio de Render y quemaría las 750 h/mes del plan free al pedo.
@@ -113,6 +113,33 @@ Para que una persona del equipo pueda leer y responder conversaciones sin necesi
   En el detalle, después de cada carga la página baja sola al último mensaje, así no perdés de vista lo nuevo en conversaciones largas.
 
 Todos los mensajes entrantes se guardan **siempre**, incluso cuando el bot decide no responder. Es justamente el caso donde un humano necesita leer la conversación, así que una conversación derivada nunca aparece vacía en la bandeja.
+
+## Contacto en frío: plantillas desde `/inbox/nuevo`
+
+WhatsApp no deja mandar texto libre a alguien que nunca escribió — solo una plantilla ya aprobada por Meta. Para eso está `/inbox/nuevo` ("+ Nuevo contacto" en el listado): el empleado carga el número, un motivo (para su propio registro, no se envía), el **nombre exacto** de la plantilla aprobada, y sus variables separadas por `|` (si la plantilla no tiene variables, se deja vacío).
+
+- **Qué pasa al enviar**: sale la plantilla vía `sendTemplateMessage` (misma API, mismo token que el resto del bot), se crea la conversación ya marcada como `handed_off = true` — el bot no tiene contexto sobre "pago pendiente" o "clase no vista", así que cualquier respuesta la atiende un humano, nunca Gemini —, y el envío queda registrado en la tabla `outbound_contacts` (motivo, plantilla, fecha).
+- **Si Meta rechaza el envío** (plantilla mal escrita, no aprobada, etc.), no queda nada creado — ni conversación ni registro — así no hay conversaciones fantasma de intentos fallidos.
+- **Recordar dos veces no es opt-out**: no hay límite de cantidad de plantillas Utility que le puedas mandar a la misma persona por el mismo motivo (a diferencia de Marketing, que sí tiene tope). Cada envío queda como una fila separada en `outbound_contacts`.
+- **Opt-out**: si alguien pide que no le escriban más, el botón "Marcar 'no contactar de nuevo'" en el detalle de la conversación lo marca de forma permanente. A partir de ahí, `/inbox/nuevo` rechaza (409) cualquier intento de mandarle una plantilla nueva — pero **no** bloquea que el empleado le responda normalmente si la persona escribe por su cuenta; el opt-out es sobre no *iniciar* contacto, no sobre cortar una conversación en curso.
+
+## Fotos y PDFs que manda el cliente
+
+Si un cliente manda una imagen, un PDF, un audio o un video, el mensaje se guarda igual que uno de texto y el archivo queda disponible en el hilo de `/inbox` — la imagen se ve inline, el resto aparece como link para abrir o descargar.
+
+Cómo funciona, porque tiene una vuelta:
+
+- El webhook **no trae el archivo**, solo un `media_id`. Hay que resolverlo (`GET /{media_id}`) para conseguir una URL temporal que **vence a los 5 minutos**, y bajar los bytes desde ahí. El `media_id` en sí vence a los **7 días**.
+- Por eso el archivo se **baja apenas llega el mensaje**, no cuando el empleado abre la conversación: si esperáramos, un hilo mirado una semana después ya no tendría forma de recuperar el archivo.
+- Se guarda en Postgres, en una tabla `media` aparte de `messages` — así una consulta descuidada sobre los mensajes nunca arrastra megabytes sin querer.
+- El panel lo sirve desde `/inbox/media/:id`, detrás del mismo login. **No se puede linkear directo a la URL de Meta**: aunque parece un link de CDN común, necesita el token de autorización en un header, y el navegador no puede mandarlo desde una etiqueta `<img>`.
+
+Dos cuidados que están implementados:
+
+- **Tipo de archivo**: el cliente controla qué mime type manda. Solo se muestran inline imágenes, audio, video y PDF; cualquier otra cosa (un `.html` con un script adentro, por ejemplo) se fuerza a descarga como binario opaco, con `X-Content-Type-Options: nosniff`. Sin esto, un cliente podría mandar un HTML malicioso que se ejecutaría en el navegador del empleado, con su sesión.
+- **Tamaño**: `MEDIA_MAX_MB` (10 por defecto) corta los archivos grandes. WhatsApp permite documentos de hasta 100 MB, muy por encima de lo que conviene meter en los 0.5 GB gratis de Neon. Si un archivo se pasa o la descarga falla, **el mensaje se guarda igual** con un aviso de que el archivo no se pudo guardar — el empleado necesita saber que llegó algo aunque no se haya podido conservar.
+
+**El bot no responde a archivos sin texto.** Gemini no puede ver la imagen, así que contestar sería adivinar; si la foto viene con un texto adjunto (caption), ahí sí responde a ese texto. Una foto suelta queda para que la mire una persona.
 
 ### Limitaciones que conviene tener presentes
 

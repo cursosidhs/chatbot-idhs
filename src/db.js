@@ -43,5 +43,35 @@ export async function initSchema() {
     -- multi-user support existed, and on 'user'/'model' rows; the inbox
     -- falls back to the generic "Empleado" label when it's missing.
     ALTER TABLE messages ADD COLUMN IF NOT EXISTS author TEXT;
+
+    -- Someone asked not to be contacted again via an outbound template.
+    -- Checked before every "Nuevo contacto" send; never touched by normal
+    -- inbound/reply traffic.
+    ALTER TABLE conversations ADD COLUMN IF NOT EXISTS opted_out BOOLEAN NOT NULL DEFAULT FALSE;
+
+    -- Audit log of every outbound template send (one row per send, so
+    -- reminding the same person twice is two rows, not an overwrite).
+    CREATE TABLE IF NOT EXISTS outbound_contacts (
+      id            BIGSERIAL PRIMARY KEY,
+      wa_id         TEXT NOT NULL REFERENCES conversations(wa_id) ON DELETE CASCADE,
+      reason        TEXT,
+      template_name TEXT NOT NULL,
+      sent_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    -- 'image' | 'document' | 'audio' | 'video' | 'sticker' when the message
+    -- carried a file, NULL for plain text. Lets the inbox decide how to
+    -- render without joining the (heavy) media table on every thread load.
+    ALTER TABLE messages ADD COLUMN IF NOT EXISTS media_kind TEXT;
+
+    -- File bytes live in their own table, deliberately: keeping BYTEA out of
+    -- the messages table means a careless SELECT * on the hot path can never
+    -- drag megabytes along with it.
+    CREATE TABLE IF NOT EXISTS media (
+      message_id BIGINT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+      mime_type  TEXT NOT NULL,
+      filename   TEXT,
+      bytes      BYTEA NOT NULL
+    );
   `);
 }

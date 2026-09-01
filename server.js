@@ -5,10 +5,12 @@ import {
   parseWebhookEvent,
   isValidSignature,
   sendTextMessage,
+  downloadMedia,
 } from "./src/whatsapp.js";
 import {
   appendBotMessage,
   appendUserMessage,
+  attachMedia,
   getHistory,
   markHandedOff,
   registerInboundMessage,
@@ -21,6 +23,16 @@ import {
 } from "./src/coursesStore.js";
 import { initSchema } from "./src/db.js";
 import { inboxRouter } from "./src/inbox.js";
+import { embeddedSignupRouter } from "./src/embeddedSignup.js";
+
+// Placeholder text stored for a media message that arrived without a caption.
+const MEDIA_LABELS = {
+  image: "imagen",
+  document: "documento",
+  audio: "audio",
+  video: "video",
+  sticker: "sticker",
+};
 
 const app = express();
 
@@ -65,7 +77,7 @@ app.post("/webhook", async (req, res) => {
     return;
   }
 
-  const { from, text } = event;
+  const { from, text, media } = event;
 
   try {
     const convo = await registerInboundMessage(from);
@@ -73,7 +85,32 @@ app.post("/webhook", async (req, res) => {
     // History is read before the new message is stored, so the model gets
     // prior turns as context and the new text as the actual prompt.
     const history = await getHistory(from);
-    await appendUserMessage(from, text);
+
+    // Media messages carry no bytes, only an id that expires in 7 days, so
+    // the file is fetched now rather than when an employee opens the thread.
+    // The stored text is the caption, or a placeholder so the row still reads
+    // sensibly in the inbox and in Gemini's history.
+    const storedText = text || (media ? `[${MEDIA_LABELS[media.kind] ?? "archivo"}]` : "");
+    const messageId = await appendUserMessage(from, storedText, media?.kind ?? null);
+
+    if (media) {
+      try {
+        const { buffer, mimeType } = await downloadMedia(media.id);
+        await attachMedia(messageId, {
+          mimeType: media.mimeType || mimeType,
+          filename: media.filename,
+          buffer,
+        });
+      } catch (err) {
+        // The message row stays either way: the employee needs to know
+        // something arrived even when the file itself couldn't be saved.
+        console.error("Could not store incoming media:", err.message);
+      }
+    }
+
+    // Gemini can't see the file, so answering a caption-less photo would be
+    // guesswork. Leave it for a human instead of inventing a reply.
+    if (media && !text) return;
 
     if (!shouldBotRespond(convo)) return;
 
@@ -96,6 +133,10 @@ app.post("/webhook", async (req, res) => {
 });
 
 app.use("/inbox", inboxRouter);
+
+// Temporary: only there to evaluate whether Coexistence is reachable for us.
+// Remove this mount and src/embeddedSignup.js once that's decided.
+app.use("/es-test", embeddedSignupRouter);
 
 app.get("/", (_req, res) => {
   res.send("WhatsApp Gemini bot is running.");

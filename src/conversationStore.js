@@ -80,11 +80,33 @@ export async function getHistory(waId) {
 // Recorded for EVERY inbound message, including ones the bot stays silent
 // on — otherwise a handed-off conversation would show up empty in the
 // inbox, which is exactly when a human needs to read it.
-export async function appendUserMessage(waId, text) {
-  await pool.query(
-    "INSERT INTO messages (wa_id, role, text) VALUES ($1, 'user', $2)",
-    [waId, text]
+// Returns the new message id so the caller can attach media to it.
+// `mediaKind` is null for plain text.
+export async function appendUserMessage(waId, text, mediaKind = null) {
+  const { rows } = await pool.query(
+    "INSERT INTO messages (wa_id, role, text, media_kind) VALUES ($1, 'user', $2, $3) RETURNING id",
+    [waId, text, mediaKind]
   );
+  return rows[0].id;
+}
+
+export async function attachMedia(messageId, { mimeType, filename, buffer }) {
+  await pool.query(
+    `
+    INSERT INTO media (message_id, mime_type, filename, bytes)
+    VALUES ($1, $2, $3, $4)
+    ON CONFLICT (message_id) DO NOTHING
+    `,
+    [messageId, mimeType, filename, buffer]
+  );
+}
+
+export async function getMedia(messageId) {
+  const { rows } = await pool.query(
+    "SELECT mime_type, filename, bytes FROM media WHERE message_id = $1",
+    [messageId]
+  );
+  return rows[0] ?? null;
 }
 
 export async function appendBotMessage(waId, text) {
@@ -122,6 +144,42 @@ export async function appendAgentMessage(waId, text, author = null) {
   }
 }
 
+// Creates the conversation row when WE start it — an outbound template to
+// someone who never wrote in has no existing row to attach to. Starts
+// handed_off = TRUE: the bot has no context for "pago pendiente" or "clase
+// no vista" campaigns, so any reply goes to a human, never to Gemini.
+// ON CONFLICT DO NOTHING: if this wa_id already has a conversation (they
+// did write in before), leave its state exactly as it was.
+export async function registerOutboundContact(waId, now = new Date()) {
+  await pool.query(
+    `
+    INSERT INTO conversations (wa_id, first_message_at, last_message_at, handed_off)
+    VALUES ($1, $2, $2, TRUE)
+    ON CONFLICT (wa_id) DO NOTHING
+    `,
+    [waId, now]
+  );
+}
+
+export async function logOutboundContact(waId, reason, templateName) {
+  await pool.query(
+    "INSERT INTO outbound_contacts (wa_id, reason, template_name) VALUES ($1, $2, $3)",
+    [waId, reason || null, templateName]
+  );
+}
+
+export async function isOptedOut(waId) {
+  const { rows } = await pool.query(
+    "SELECT opted_out FROM conversations WHERE wa_id = $1",
+    [waId]
+  );
+  return rows[0]?.opted_out ?? false;
+}
+
+export async function setOptedOut(waId, value = true) {
+  await pool.query("UPDATE conversations SET opted_out = $2 WHERE wa_id = $1", [waId, value]);
+}
+
 // `%` and `_` are wildcards to ILIKE, so a search for "50%" or "curso_1"
 // would silently match far more than the employee typed. Escaping them
 // (and the escape character itself) keeps the search literal.
@@ -138,7 +196,7 @@ export async function listConversations({ limit = 50, search = "" } = {}) {
 
   const { rows } = await pool.query(
     `
-    SELECT c.wa_id, c.last_message_at, c.handed_off,
+    SELECT c.wa_id, c.last_message_at, c.handed_off, c.opted_out,
            m.text AS last_text, m.role AS last_role, m.author AS last_author
     FROM conversations c
     LEFT JOIN LATERAL (
@@ -167,11 +225,18 @@ export async function listConversations({ limit = 50, search = "" } = {}) {
 export async function getConversation(waId) {
   const [convo, messages] = await Promise.all([
     pool.query(
-      "SELECT wa_id, first_message_at, last_message_at, handed_off FROM conversations WHERE wa_id = $1",
+      "SELECT wa_id, first_message_at, last_message_at, handed_off, opted_out FROM conversations WHERE wa_id = $1",
       [waId]
     ),
     pool.query(
-      "SELECT role, text, author, created_at FROM messages WHERE wa_id = $1 ORDER BY created_at ASC, id ASC",
+      `
+      SELECT m.id, m.role, m.text, m.author, m.created_at, m.media_kind,
+             md.filename AS media_filename, md.mime_type AS media_mime_type
+      FROM messages m
+      LEFT JOIN media md ON md.message_id = m.id
+      WHERE m.wa_id = $1
+      ORDER BY m.created_at ASC, m.id ASC
+      `,
       [waId]
     ),
   ]);

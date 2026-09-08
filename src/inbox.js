@@ -285,10 +285,10 @@ function layout(title, body) {
   ul.convos { list-style: none; padding: 0; }
   ul.convos li { border-bottom: 1px solid var(--border);
                  border-left: 4px solid transparent; border-radius: .3rem;
-                 transition: background .15s; }
+                 margin-bottom: .35rem; transition: background .15s; }
   ul.convos li.convo-bot   { border-left-color: var(--bot-border); background: var(--bot-bg); }
   ul.convos li.convo-agent { border-left-color: var(--agent-border); background: var(--agent-bg); }
-  ul.convos a { display: block; padding: .75rem .6rem; text-decoration: none; color: var(--text); }
+  ul.convos a { display: block; padding: 1rem .6rem; text-decoration: none; color: var(--text); }
   .meta { font-size: .8rem; color: var(--muted); }
   .badge { font-size: .7rem; font-weight: 600; border-radius: 999px;
            padding: .1rem .55rem; margin-left: .4rem; white-space: nowrap;

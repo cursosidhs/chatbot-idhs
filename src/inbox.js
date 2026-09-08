@@ -94,10 +94,109 @@ function escapeHtml(value) {
     .replace(/'/g, "&#39;");
 }
 
+// Escapes '<' so a message containing a literal "</script>" can't close the
+// <script> tag early and inject markup — JSON.stringify alone doesn't guard
+// against that, since message text is attacker-controlled (a customer's
+// WhatsApp message).
+function toScriptSafeJson(value) {
+  return JSON.stringify(value).replace(/</g, "\\u003c");
+}
+
+// Renders the permission toggle ("Activar notificaciones" / blocked /
+// active) plus, on the conversations list, the check that fires a browser
+// Notification for any conversation whose last_message_at moved forward.
+// last_message_at only advances on an inbound customer message — never on
+// a bot or agent reply, see conversationStore.js — so comparing it against
+// what we saw on the previous load is exactly "is there an unread message
+// from a customer", no extra role check needed.
+//
+// State lives in localStorage, not a JS variable, because the page does a
+// full reload on every poll (autoRefreshScript) — there is no long-lived
+// script context to hold it in. `convos` is omitted on pages other than the
+// list (e.g. a single conversation thread), which still renders the toggle
+// but skips the check.
+function notificationScript(convos) {
+  const data = convos
+    ? toScriptSafeJson(
+        convos.map((c) => ({
+          waId: c.wa_id,
+          lastMessageAt: c.last_message_at,
+          preview: (c.last_text || "").slice(0, 120),
+        }))
+      )
+    : "null";
+
+  return `
+<span id="notif-status" class="meta"></span>
+<script>
+(function () {
+  var el = document.getElementById("notif-status");
+  if (!el || !("Notification" in window)) return;
+
+  function renderToggle() {
+    el.innerHTML = "";
+    if (Notification.permission === "granted") {
+      el.textContent = "🔔 Notificaciones activas";
+    } else if (Notification.permission === "denied") {
+      el.textContent = "🔕 Notificaciones bloqueadas por el navegador";
+    } else {
+      var btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "btn-sm";
+      btn.textContent = "🔔 Activar notificaciones";
+      btn.onclick = function () { Notification.requestPermission().then(renderToggle); };
+      el.appendChild(btn);
+    }
+  }
+  renderToggle();
+
+  var convos = ${data};
+  if (!convos || Notification.permission !== "granted") return;
+
+  var STORAGE_KEY = "inboxSeenAt";
+  var seen;
+  try { seen = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}"); }
+  catch (e) { seen = {}; }
+
+  // Empty storage means this is the first load ever (or it got cleared) —
+  // record a baseline instead of notifying about the whole conversation
+  // history at once.
+  var firstRun = Object.keys(seen).length === 0;
+
+  convos.forEach(function (c) {
+    var prev = seen[c.waId];
+    var isNew = !firstRun && (!prev || new Date(c.lastMessageAt) > new Date(prev));
+    if (isNew) {
+      var n = new Notification("Nuevo mensaje de " + c.waId, {
+        body: c.preview || "(sin texto)",
+        tag: "inbox-" + c.waId,
+        renotify: true,
+      });
+      n.onclick = function () {
+        window.focus();
+        location.href = "/inbox/" + encodeURIComponent(c.waId);
+      };
+    }
+    seen[c.waId] = c.lastMessageAt;
+  });
+
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(seen)); } catch (e) {}
+})();
+</script>`;
+}
+
+// Without an explicit timeZone, toLocaleString uses the process's local
+// zone — on Render that's UTC, not Buenos Aires, so every timestamp in the
+// inbox was three hours ahead of the real time (this was a real bug, not
+// hypothetical: caught because a reply logged at "15:32" landed while the
+// clock read 12:44 local). Pinned explicitly rather than relying on the
+// host's TZ setting, since that's infrastructure config, not app config.
 function formatTime(date) {
   return new Date(date).toLocaleString("es-AR", {
+    timeZone: "America/Argentina/Buenos_Aires",
     day: "2-digit",
     month: "2-digit",
+    year: "numeric",
     hour: "2-digit",
     minute: "2-digit",
   });
@@ -216,8 +315,11 @@ function layout(title, body) {
   form.newcontact label { display: flex; flex-direction: column; gap: .25rem; font-size: .85rem; }
   form.newcontact input[type="text"] { font: inherit; padding: .5rem; border-radius: .5rem;
              border: 1px solid var(--border); background: transparent; color: var(--text); }
-  .toolbar { display: flex; justify-content: space-between; align-items: center; gap: .5rem; }
+  .toolbar { display: flex; justify-content: space-between; align-items: center; gap: .5rem;
+             flex-wrap: wrap; }
   .toolbar a { font-weight: 600; text-decoration: none; }
+  .toolbar-actions { display: flex; align-items: center; gap: .75rem; }
+  .btn-sm { font-size: .8rem; padding: .3rem .7rem; }
   img.media { display: block; max-width: 100%; max-height: 20rem; border-radius: .4rem;
               margin-top: .4rem; }
   a.file { display: inline-block; margin-top: .4rem; }
@@ -276,7 +378,10 @@ inboxRouter.get("/", async (req, res) => {
 
   const toolbar = `<div class="toolbar">
     <h1>${escapeHtml(heading)}</h1>
-    <a href="/inbox/nuevo">+ Nuevo contacto</a>
+    <div class="toolbar-actions">
+      ${notificationScript(convos)}
+      <a href="/inbox/nuevo">+ Nuevo contacto</a>
+    </div>
   </div>`;
 
   res.send(layout("Conversaciones", `${toolbar}${searchBox}${results}`));
@@ -455,7 +560,10 @@ inboxRouter.get("/:waId", async (req, res) => {
     layout(
       `Conversación ${convo.wa_id}`,
       `<p><a href="/inbox">← Volver</a></p>
-       <h1>${escapeHtml(convo.wa_id)}</h1>
+       <div class="toolbar">
+         <h1>${escapeHtml(convo.wa_id)}</h1>
+         ${notificationScript()}
+       </div>
        ${messages}
        ${form}
        ${optOut}

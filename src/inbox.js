@@ -151,8 +151,13 @@ function notificationScript(convos) {
   renderToggle();
 
   var convos = ${data};
-  if (!convos || Notification.permission !== "granted") return;
+  if (!convos) return;
 
+  // Baseline tracking runs on every load regardless of permission state —
+  // otherwise the first load where permission happens to be "granted"
+  // always looks like firstRun (localStorage was never written while
+  // permission was still "default"), and silently swallows the very first
+  // new message instead of notifying about it.
   var STORAGE_KEY = "inboxSeenAt";
   var seen;
   try { seen = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}"); }
@@ -162,11 +167,12 @@ function notificationScript(convos) {
   // record a baseline instead of notifying about the whole conversation
   // history at once.
   var firstRun = Object.keys(seen).length === 0;
+  var canNotify = Notification.permission === "granted";
 
   convos.forEach(function (c) {
     var prev = seen[c.waId];
     var isNew = !firstRun && (!prev || new Date(c.lastMessageAt) > new Date(prev));
-    if (isNew) {
+    if (isNew && canNotify) {
       var n = new Notification("Nuevo mensaje de " + c.waId, {
         body: c.preview || "(sin texto)",
         tag: "inbox-" + c.waId,

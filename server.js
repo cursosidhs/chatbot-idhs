@@ -25,6 +25,13 @@ import { initSchema } from "./src/db.js";
 import { inboxRouter } from "./src/inbox.js";
 import { embeddedSignupRouter } from "./src/embeddedSignup.js";
 
+// Sent when Gemini is down after its retries. Deliberately doesn't promise
+// that a human will reply *instead* of the bot: the outage is usually brief,
+// and the bot should still answer the customer's next message normally.
+const FALLBACK_REPLY =
+  "Perdón, estoy con un problema técnico para responderte en este momento. " +
+  "Tu consulta quedó registrada y una persona del equipo la va a ver.";
+
 // Placeholder text stored for a media message that arrived without a caption.
 const MEDIA_LABELS = {
   image: "imagen",
@@ -123,10 +130,24 @@ app.post("/webhook", async (req, res) => {
       coursesContext = formatCoursesForPrompt(courses);
     }
 
-    const reply = await generateReply(history, text, coursesContext);
-    console.log("Gemini reply:", reply);
-    await appendBotMessage(from, reply);
+    let reply;
+    try {
+      reply = await generateReply(history, text, coursesContext);
+      console.log("Gemini reply:", reply);
+    } catch (err) {
+      // Gemini already retried the transient cases and still failed. Saying
+      // something beats silence: otherwise the customer has no idea whether
+      // the message arrived, and the number no longer has an app where
+      // anyone would notice.
+      console.error("Gemini unavailable, sending fallback:", err.message);
+      reply = FALLBACK_REPLY;
+    }
+
+    // Send first, store second: a stored-but-undelivered message would show
+    // in /inbox as if the customer had been answered, and the employee would
+    // never follow up. The reverse (delivered but unlogged) is recoverable.
     await sendTextMessage(from, reply);
+    await appendBotMessage(from, reply);
   } catch (err) {
     console.error("Error handling incoming message:", err);
   }

@@ -141,6 +141,17 @@ Dos cuidados que están implementados:
 
 **El bot no responde a archivos sin texto.** Gemini no puede ver la imagen, así que contestar sería adivinar; si la foto viene con un texto adjunto (caption), ahí sí responde a ese texto. Una foto suelta queda para que la mire una persona.
 
+## Qué pasa si Gemini se cae
+
+Gemini devuelve `503` cuando el modelo está momentáneamente saturado — pasa de vez en cuando y se resuelve solo. El bot lo maneja en dos niveles:
+
+1. **Reintenta** hasta dos veces (a 1 s y 3 s). La mayoría de los 503 se resuelven en el segundo intento, sin que el cliente note nada más que unos segundos de demora.
+2. **Si sigue fallando**, le manda igual un mensaje al cliente avisando que hay un problema técnico y que su consulta quedó registrada. Antes se quedaba mudo: el cliente escribía y no pasaba nada, sin saber si el número siquiera andaba.
+
+Los errores que no son transitorios (una API key inválida, por ejemplo) fallan al primer intento, sin esperas inútiles.
+
+En los dos casos, **la consulta del cliente ya quedó guardada** antes de llamar a Gemini, así que aparece en `/inbox` para que la atienda una persona.
+
 ### Limitaciones que conviene tener presentes
 
 - **No hay notificaciones.** No suena el celular ni llega un mail cuando entra un mensaje. Con la pestaña abierta se actualiza sola, pero si la cierra, el empleado tiene que acordarse de volver a entrar. Es la diferencia más grande contra la app de WhatsApp Business.

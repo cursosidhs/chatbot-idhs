@@ -12,6 +12,7 @@ import {
   appendUserMessage,
   attachMedia,
   getHistory,
+  markAfterHoursNotified,
   markHandedOff,
   registerInboundMessage,
   shouldBotRespond,
@@ -31,6 +32,12 @@ import { embeddedSignupRouter } from "./src/embeddedSignup.js";
 const FALLBACK_REPLY =
   "Perdón, estoy con un problema técnico para responderte en este momento. " +
   "Tu consulta quedó registrada y una persona del equipo la va a ver.";
+
+// Sent once per session when a message lands outside the bot's response
+// window and no employee has taken the conversation. Edit the hours here.
+const AFTER_HOURS_REPLY =
+  "¡Gracias por escribirnos! Tu consulta quedó registrada y una persona del " +
+  "equipo se va a poner en contacto con vos de 10 a 17 hs.";
 
 // Placeholder text stored for a media message that arrived without a caption.
 const MEDIA_LABELS = {
@@ -115,11 +122,26 @@ app.post("/webhook", async (req, res) => {
       }
     }
 
+    // An employee already owns this conversation: no automatic message of
+    // any kind, including the after-hours notice.
+    if (convo.handed_off) return;
+
+    // handed_off is already ruled out above, so a false here means the
+    // response window has passed. Tell the customer when someone will get
+    // back to them instead of leaving them with silence — but only once per
+    // session, so five messages don't produce five identical replies.
+    if (!shouldBotRespond(convo)) {
+      if (!convo.after_hours_notified) {
+        await sendTextMessage(from, AFTER_HOURS_REPLY);
+        await appendBotMessage(from, AFTER_HOURS_REPLY);
+        await markAfterHoursNotified(from);
+      }
+      return;
+    }
+
     // Gemini can't see the file, so answering a caption-less photo would be
     // guesswork. Leave it for a human instead of inventing a reply.
     if (media && !text) return;
-
-    if (!shouldBotRespond(convo)) return;
 
     // Only fetch/inject the course list when the message looks like it's
     // asking about one — keeps token usage (and Gemini free-tier RPM/TPM

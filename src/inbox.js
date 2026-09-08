@@ -140,41 +140,84 @@ function layout(title, body) {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escapeHtml(title)}</title>
 <style>
-  :root { color-scheme: light dark; }
+  :root {
+    color-scheme: light dark;
+    --bg: #FAFEFF;
+    --text: #000000;
+    --muted: rgba(0, 0, 0, .62);
+    --border: rgba(0, 0, 0, .14);
+    --surface: rgba(0, 0, 0, .04);
+    --primary: #362DFF;          /* acción principal / empleado */
+    --primary-contrast: #FAFEFF;
+    --secondary: #717CFC;        /* bot */
+    --bot-bg: rgba(113, 124, 252, .14);
+    --bot-border: #717CFC;
+    --agent-bg: rgba(54, 45, 255, .10);
+    --agent-border: #362DFF;
+    --warn-bg: #b4530022;
+    --warn-border: #b4530066;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #000000;
+      --text: #FAFEFF;
+      --muted: rgba(250, 254, 255, .65);
+      --border: rgba(250, 254, 255, .18);
+      --surface: rgba(250, 254, 255, .07);
+      --primary: #717CFC;        /* más visible que #362DFF sobre negro */
+      --primary-contrast: #000000;
+      --bot-bg: rgba(113, 124, 252, .20);
+      --agent-bg: rgba(54, 45, 255, .38);
+      --agent-border: #717CFC;
+    }
+  }
+  * { box-sizing: border-box; }
   body { font-family: system-ui, sans-serif; margin: 0; padding: 1rem;
-         max-width: 46rem; margin-inline: auto; line-height: 1.5; }
-  h1 { font-size: 1.25rem; }
-  a { color: inherit; }
+         max-width: 46rem; margin-inline: auto; line-height: 1.5;
+         background: var(--bg); color: var(--text); }
+  h1 { font-size: 1.25rem; color: var(--text); }
+  a { color: var(--primary); }
   ul.convos { list-style: none; padding: 0; }
-  ul.convos li { border-bottom: 1px solid #8884; }
-  ul.convos a { display: block; padding: .75rem .25rem; text-decoration: none; }
-  .meta { font-size: .8rem; opacity: .7; }
-  .badge { font-size: .7rem; border: 1px solid #8886; border-radius: 999px;
-           padding: .05rem .5rem; margin-left: .4rem; }
+  ul.convos li { border-bottom: 1px solid var(--border);
+                 border-left: 4px solid transparent; border-radius: .3rem;
+                 transition: background .15s; }
+  ul.convos li.convo-bot   { border-left-color: var(--bot-border); background: var(--bot-bg); }
+  ul.convos li.convo-agent { border-left-color: var(--agent-border); background: var(--agent-bg); }
+  ul.convos a { display: block; padding: .75rem .6rem; text-decoration: none; color: var(--text); }
+  .meta { font-size: .8rem; color: var(--muted); }
+  .badge { font-size: .7rem; font-weight: 600; border-radius: 999px;
+           padding: .1rem .55rem; margin-left: .4rem; white-space: nowrap;
+           display: inline-block; }
+  .badge-bot { background: var(--bot-bg); color: var(--secondary); border: 1px solid var(--bot-border); }
+  .badge-agent { background: var(--agent-border); color: var(--primary-contrast); }
+  .badge-warn { background: var(--warn-bg); border: 1px solid var(--warn-border); color: var(--text); }
   .msg { padding: .5rem .75rem; border-radius: .6rem; margin: .4rem 0;
          max-width: 85%; white-space: pre-wrap; overflow-wrap: anywhere; }
-  .msg.user  { background: #8882; }
-  .msg.model { background: #2f7d5b33; margin-left: auto; }
-  .msg.agent { background: #2f5f9e33; margin-left: auto; }
+  .msg.user  { background: var(--surface); }
+  .msg.model { background: var(--bot-bg); border: 1px solid var(--bot-border); margin-left: auto; }
+  .msg.agent { background: var(--agent-bg); border: 1px solid var(--agent-border); margin-left: auto; }
   form { display: flex; gap: .5rem; margin-top: 1rem; }
   form.search { margin: .5rem 0 1rem; align-items: center; flex-wrap: wrap; }
   input[type="search"] { flex: 1; min-width: 10rem; font: inherit; padding: .5rem;
-             border-radius: .5rem; border: 1px solid #8886; background: transparent;
-             color: inherit; }
-  .clear { font-size: .85rem; opacity: .7; }
+             border-radius: .5rem; border: 1px solid var(--border); background: transparent;
+             color: var(--text); }
+  .clear { font-size: .85rem; color: var(--muted); }
   textarea { flex: 1; min-height: 3.5rem; font: inherit; padding: .5rem;
-             border-radius: .5rem; border: 1px solid #8886; background: transparent;
-             color: inherit; }
+             border-radius: .5rem; border: 1px solid var(--border); background: transparent;
+             color: var(--text); }
   button { font: inherit; padding: .5rem 1rem; border-radius: .5rem;
-           border: 1px solid #8886; background: #2f7d5b; color: #fff; cursor: pointer; }
+           border: none; background: var(--primary); color: var(--primary-contrast);
+           cursor: pointer; }
+  button:hover { opacity: .88; }
   button[disabled] { opacity: .5; cursor: not-allowed; }
-  .warn { background: #b4530022; border: 1px solid #b4530066; padding: .6rem .8rem;
-          border-radius: .5rem; font-size: .85rem; }
+  .warn { background: var(--warn-bg); border: 1px solid var(--warn-border); padding: .6rem .8rem;
+          border-radius: .5rem; font-size: .85rem; color: var(--text); }
   form.newcontact { flex-direction: column; align-items: stretch; max-width: 26rem; }
   form.newcontact label { display: flex; flex-direction: column; gap: .25rem; font-size: .85rem; }
   form.newcontact input[type="text"] { font: inherit; padding: .5rem; border-radius: .5rem;
-             border: 1px solid #8886; background: transparent; color: inherit; }
+             border: 1px solid var(--border); background: transparent; color: var(--text); }
   .toolbar { display: flex; justify-content: space-between; align-items: center; gap: .5rem; }
+  .toolbar a { font-weight: 600; text-decoration: none; }
   img.media { display: block; max-width: 100%; max-height: 20rem; border-radius: .4rem;
               margin-top: .4rem; }
   a.file { display: inline-block; margin-top: .4rem; }
@@ -197,9 +240,12 @@ inboxRouter.get("/", async (req, res) => {
     .map((c) => {
       const who = authorLabel(c.last_role, c.last_author);
       const preview = c.last_text ? `${who}: ${c.last_text}` : "(sin mensajes)";
-      const badge = c.handed_off ? '<span class="badge">atendido por humano</span>' : "";
-      const optOutBadge = c.opted_out ? '<span class="badge">no contactar</span>' : "";
-      return `<li><a href="/inbox/${encodeURIComponent(c.wa_id)}">
+      const statusClass = c.handed_off ? "convo-agent" : "convo-bot";
+      const badge = c.handed_off
+        ? '<span class="badge badge-agent">🧑‍💼 Empleado</span>'
+        : '<span class="badge badge-bot">🤖 Bot</span>';
+      const optOutBadge = c.opted_out ? '<span class="badge badge-warn">no contactar</span>' : "";
+      return `<li class="${statusClass}"><a href="/inbox/${encodeURIComponent(c.wa_id)}">
         <strong>${escapeHtml(c.wa_id)}</strong>${badge}${optOutBadge}
         <div class="meta">${escapeHtml(formatTime(c.last_message_at))}</div>
         <div>${escapeHtml(preview.slice(0, 120))}</div>

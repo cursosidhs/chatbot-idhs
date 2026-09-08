@@ -57,7 +57,7 @@ Meta requires a fast 200 response to the webhook POST, so `server.js` responds i
 
 These four rules are the point of the project and are implemented jointly by `server.js`'s webhook handler and `conversationStore.js` — read both together to understand the flow:
 
-1. **Only responds early in a conversation.** `shouldBotRespond` returns true only within `BOT_RESPONSE_WINDOW_MINUTES` (default 10) of `firstMessageAt`.
+1. **Only responds early in a conversation.** `shouldBotRespond` returns true only within `BOT_RESPONSE_WINDOW_MINUTES` (default **300 — five hours**) of `firstMessageAt`. Past that the bot sends `AFTER_HOURS_REPLY` ("someone will contact you between 10 and 17") **once per session** rather than going silent — a customer who gets nothing back assumes the number is dead and repeats themselves, which is exactly what happened in testing. The `after_hours_notified` column gates the repeat and is reset by `registerInboundMessage` on a new session, alongside `first_message_at` and `handed_off`. `server.js` checks `convo.handed_off` *before* this branch, so a conversation an employee already owns produces no automatic message at all.
 2. **Session boundary.** `registerInboundMessage` treats a customer message as starting a *new* conversation (resetting `firstMessageAt`, clearing `handedOff`) if more than `BOT_SESSION_GAP_HOURS` (default 6) has passed since `lastMessageAt`.
 3. **Yields to human employees.** Two independent triggers set `handed_off = true`, after which the bot stays silent for the rest of that session regardless of the time window:
    - An employee replies from `/inbox` → `appendAgentMessage`. This is the path that actually runs today.

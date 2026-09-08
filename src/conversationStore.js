@@ -31,13 +31,23 @@ export async function registerInboundMessage(waId, now = new Date()) {
         THEN $2 ELSE conversations.first_message_at END,
       handed_off = CASE
         WHEN $2 - conversations.last_message_at > make_interval(secs => $3)
-        THEN FALSE ELSE conversations.handed_off END
-    RETURNING wa_id, first_message_at, last_message_at, handed_off
+        THEN FALSE ELSE conversations.handed_off END,
+      after_hours_notified = CASE
+        WHEN $2 - conversations.last_message_at > make_interval(secs => $3)
+        THEN FALSE ELSE conversations.after_hours_notified END
+    RETURNING wa_id, first_message_at, last_message_at, handed_off, after_hours_notified
     `,
     [waId, now, gapSeconds]
   );
 
   return rows[0];
+}
+
+export async function markAfterHoursNotified(waId) {
+  await pool.query(
+    "UPDATE conversations SET after_hours_notified = TRUE WHERE wa_id = $1",
+    [waId]
+  );
 }
 
 // Takes the row returned by registerInboundMessage rather than re-querying,

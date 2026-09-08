@@ -49,6 +49,11 @@ export async function initSchema() {
     -- inbound/reply traffic.
     ALTER TABLE conversations ADD COLUMN IF NOT EXISTS opted_out BOOLEAN NOT NULL DEFAULT FALSE;
 
+    -- Whether the "we'll get back to you between 10 and 17" notice already
+    -- went out this session, so five messages past the window don't produce
+    -- five identical replies. Reset when a new session starts.
+    ALTER TABLE conversations ADD COLUMN IF NOT EXISTS after_hours_notified BOOLEAN NOT NULL DEFAULT FALSE;
+
     -- Audit log of every outbound template send (one row per send, so
     -- reminding the same person twice is two rows, not an overwrite).
     CREATE TABLE IF NOT EXISTS outbound_contacts (

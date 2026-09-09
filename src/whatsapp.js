@@ -132,8 +132,17 @@ export function parseWebhookEvent(payload) {
     for (const change of entry.changes ?? []) {
       if (change.field === "messages") {
         const message = change.value?.messages?.[0];
+        // `message.id` is Meta's wamid.*, carried through so the store can
+        // reject a webhook Meta re-delivered. See the wa_message_id notes in
+        // db.js: without it a redelivery is answered (and paid for) twice.
         if (message?.type === "text") {
-          return { type: "message", from: message.from, text: message.text.body, media: null };
+          return {
+            type: "message",
+            id: message.id ?? null,
+            from: message.from,
+            text: message.text.body,
+            media: null,
+          };
         }
 
         if (MEDIA_TYPES.has(message?.type)) {
@@ -141,6 +150,7 @@ export function parseWebhookEvent(payload) {
           if (content.id) {
             return {
               type: "message",
+              id: message.id ?? null,
               from: message.from,
               text: content.caption ?? "",
               media: {

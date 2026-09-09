@@ -12,6 +12,7 @@ import {
   appendUserMessage,
   attachMedia,
   getHistory,
+  isHandedOff,
   markAfterHoursNotified,
   markHandedOff,
   registerInboundMessage,
@@ -47,6 +48,21 @@ const MEDIA_LABELS = {
   video: "video",
   sticker: "sticker",
 };
+
+// Last line of defence, armed before anything can throw. Node's default on
+// an unhandled rejection is to kill the process, and this runs as a single
+// free-tier instance with no supervisor watching: one rejection nobody
+// caught would take the bot offline until Render notices and cold-starts it,
+// losing whatever webhook work was in flight (Meta already got its 200 and
+// won't retry). Staying up and logging loudly beats dying quietly — the
+// routes themselves still handle their own errors properly.
+process.on("unhandledRejection", (reason) => {
+  console.error("Unhandled promise rejection (proceso vivo a propósito):", reason);
+});
+
+process.on("uncaughtException", (err) => {
+  console.error("Uncaught exception (proceso vivo a propósito):", err);
+});
 
 const app = express();
 
@@ -105,7 +121,17 @@ app.post("/webhook", async (req, res) => {
     // The stored text is the caption, or a placeholder so the row still reads
     // sensibly in the inbox and in Gemini's history.
     const storedText = text || (media ? `[${MEDIA_LABELS[media.kind] ?? "archivo"}]` : "");
-    const messageId = await appendUserMessage(from, storedText, media?.kind ?? null);
+    const messageId = await appendUserMessage(from, storedText, media?.kind ?? null, event.id);
+
+    // NULL means this exact wamid is already in the table: Meta re-delivered
+    // a webhook we already handled, which happens when a cold start on
+    // Render's free tier outlasts its timeout. The customer was already
+    // answered — going on would download the media again, spend a second
+    // Gemini call and send a duplicate (billable) reply.
+    if (messageId === null) {
+      console.log("Webhook duplicado, ignorado:", event.id);
+      return;
+    }
 
     if (media) {
       try {
@@ -132,6 +158,11 @@ app.post("/webhook", async (req, res) => {
     // session, so five messages don't produce five identical replies.
     if (!shouldBotRespond(convo)) {
       if (!convo.after_hours_notified) {
+        // Same staleness problem as below, on a shorter fuse: the only
+        // await between the read and here is the media download, but an
+        // employee who answered during it shouldn't be followed by a robotic
+        // "te contactamos de 10 a 17".
+        if (await isHandedOff(from)) return;
         await sendTextMessage(from, AFTER_HOURS_REPLY);
         await appendBotMessage(from, AFTER_HOURS_REPLY);
         await markAfterHoursNotified(from);
@@ -163,6 +194,19 @@ app.post("/webhook", async (req, res) => {
       // anyone would notice.
       console.error("Gemini unavailable, sending fallback:", err.message);
       reply = FALLBACK_REPLY;
+    }
+
+    // `convo.handed_off` was read before the media download, the course
+    // scrape and the Gemini call — tens of seconds ago in the worst case.
+    // If an employee replied from /inbox in the meantime they already own
+    // this conversation, so the reply we just generated gets dropped rather
+    // than sent: the customer has a human answer already, and a bot message
+    // landing seconds later contradicts it. Nothing is stored either — the
+    // reply was never delivered, and logging it would show in /inbox as if
+    // the customer had been answered twice.
+    if (await isHandedOff(from)) {
+      console.log("Un empleado tomó la conversación mientras se generaba la respuesta; se descarta:", from);
+      return;
     }
 
     // Send first, store second: a stored-but-undelivered message would show

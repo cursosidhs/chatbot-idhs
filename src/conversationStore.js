@@ -74,6 +74,26 @@ export function shouldBotRespond(convo, now = new Date()) {
   return now - convo.first_message_at <= config.responseWindowMs;
 }
 
+// Re-reads just the handoff flag, for the moment right before an outbound
+// send. `server.js` holds the row registerInboundMessage handed it for as
+// long as it takes to download media, scrape the course list (10s timeout)
+// and call Gemini (plus its 1s/3s retry backoffs) — tens of seconds in the
+// worst case. An employee who replies from /inbox inside that window has
+// already set handed_off, but the in-flight bot reply would go out anyway
+// and the customer would get answered twice, seconds apart.
+//
+// Yes, this is a second round trip on a codebase that counts them (Neon
+// bills compute time). It's paid only on the path that is about to send —
+// where a Gemini call was already spent — never on every message. From
+// 2026-10-01 the duplicate it prevents is also a billed service message.
+export async function isHandedOff(waId) {
+  const { rows } = await pool.query(
+    "SELECT handed_off FROM conversations WHERE wa_id = $1",
+    [waId]
+  );
+  return rows[0]?.handed_off === true;
+}
+
 export async function markHandedOff(waId, now = new Date()) {
   await pool.query(
     `
@@ -106,14 +126,25 @@ export async function getHistory(waId) {
 // Recorded for EVERY inbound message, including ones the bot stays silent
 // on — otherwise a handed-off conversation would show up empty in the
 // inbox, which is exactly when a human needs to read it.
-// Returns the new message id so the caller can attach media to it.
 // `mediaKind` is null for plain text.
-export async function appendUserMessage(waId, text, mediaKind = null) {
+//
+// Returns the new message id so the caller can attach media to it, or NULL
+// when `waMessageId` was already stored — i.e. Meta re-delivered a webhook
+// we have already handled. The unique index does the deciding, so two
+// concurrent redeliveries can't both win the way a SELECT-then-INSERT
+// check would let them. A NULL return means "stop, this one is already
+// answered", not "the write failed".
+export async function appendUserMessage(waId, text, mediaKind = null, waMessageId = null) {
   const { rows } = await pool.query(
-    "INSERT INTO messages (wa_id, role, text, media_kind) VALUES ($1, 'user', $2, $3) RETURNING id",
-    [waId, text, mediaKind]
+    `
+    INSERT INTO messages (wa_id, role, text, media_kind, wa_message_id)
+    VALUES ($1, 'user', $2, $3, $4)
+    ON CONFLICT (wa_message_id) WHERE wa_message_id IS NOT NULL DO NOTHING
+    RETURNING id
+    `,
+    [waId, text, mediaKind, waMessageId]
   );
-  return rows[0].id;
+  return rows[0]?.id ?? null;
 }
 
 export async function attachMedia(messageId, { mimeType, filename, buffer }) {

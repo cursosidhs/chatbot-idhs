@@ -71,6 +71,24 @@ export async function initSchema() {
     -- render without joining the (heavy) media table on every thread load.
     ALTER TABLE messages ADD COLUMN IF NOT EXISTS media_kind TEXT;
 
+    -- Meta's own id for an inbound message (wamid.*). NULL on bot/agent rows
+    -- and on customer rows written before dedup existed.
+    --
+    -- Meta re-delivers a webhook when it doesn't get a fast 200, and on
+    -- Render's free tier a cold start (the service sleeps after 15 min) can
+    -- easily outlast that timeout. Without the unique index below, the retry
+    -- would store the message twice, spend a second Gemini call on it and
+    -- send the customer two replies — which from 2026-10-01, when service
+    -- messages are billed per delivered message, is also paid for twice.
+    ALTER TABLE messages ADD COLUMN IF NOT EXISTS wa_message_id TEXT;
+
+    -- Partial so the NULLs on bot/agent rows aren't indexed at all: the index
+    -- only covers inbound rows, which keeps it small against Neon's 0.5 GB.
+    -- appendUserMessage's ON CONFLICT names the same WHERE clause so Postgres
+    -- can infer this index.
+    CREATE UNIQUE INDEX IF NOT EXISTS messages_wa_message_id_key
+      ON messages (wa_message_id) WHERE wa_message_id IS NOT NULL;
+
     -- File bytes live in their own table, deliberately: keeping BYTEA out of
     -- the messages table means a careless SELECT * on the hot path can never
     -- drag megabytes along with it.

@@ -382,10 +382,20 @@ function layout(title, body) {
 
 export const inboxRouter = express.Router();
 
+// Express 4 does NOT catch a rejected promise from an async handler: it
+// escapes to Node, which kills the process by default. Every route here
+// touches Postgres, and Neon's free tier scales to zero after 5 min — so a
+// transient connection error while an employee browses the inbox is routine,
+// not hypothetical, and used to be enough to take the whole bot down with it.
+// Wrapping funnels those into the error middleware at the bottom instead.
+// Express 5 does this natively; drop the wrapper if this ever upgrades.
+const asyncRoute = (handler) => (req, res, next) =>
+  Promise.resolve(handler(req, res, next)).catch(next);
+
 inboxRouter.use(requireAuth);
 inboxRouter.use(express.urlencoded({ extended: false }));
 
-inboxRouter.get("/", async (req, res) => {
+inboxRouter.get("/", asyncRoute(async (req, res) => {
   const search = typeof req.query.q === "string" ? req.query.q : "";
   const convos = await listConversations({ search });
 
@@ -435,7 +445,7 @@ inboxRouter.get("/", async (req, res) => {
   </div>`;
 
   res.send(layout("Conversaciones", `${toolbar}${searchBox}${results}`));
-});
+}));
 
 // Contactar primero a alguien que nunca escribió requiere una plantilla
 // aprobada por Meta — WhatsApp rechaza texto libre para business-initiated.
@@ -468,11 +478,24 @@ inboxRouter.get("/nuevo", (_req, res) => {
 
 // Serves a stored photo/PDF from our own origin. Registered before
 // GET /:waId so "media" isn't mistaken for a phone number.
-inboxRouter.get("/media/:messageId", async (req, res) => {
+inboxRouter.get("/media/:messageId", asyncRoute(async (req, res) => {
   if (!/^\d+$/.test(req.params.messageId)) return res.sendStatus(400);
 
   const file = await getMedia(req.params.messageId);
   if (!file) return res.status(404).send("Archivo no encontrado.");
+
+  // The bytes behind a message id never change (attachMedia is ON CONFLICT
+  // DO NOTHING), so they can be cached hard and permanently. Without this
+  // header there is nothing for the browser to cache on — not even a
+  // Last-Modified to guess from — so autoRefreshScript's 30 s reload
+  // re-downloads every image in the open thread out of Postgres, every
+  // time. One thread with a few photos left open for a shift is over a
+  // gigabyte a month against Neon's 5 GB free egress cap, plus the
+  // CU-hours spent keeping the compute awake to serve it.
+  //
+  // `private`, not `public`: this whole router is behind Basic Auth and
+  // these are customers' files — they must never land in a shared proxy.
+  res.setHeader("Cache-Control", "private, max-age=31536000, immutable");
 
   const inline = isInlineSafe(file.mime_type);
   const fallbackName = `archivo-${req.params.messageId}${extensionFromMime(file.mime_type)}`;
@@ -493,9 +516,9 @@ inboxRouter.get("/media/:messageId", async (req, res) => {
   const bytes = Buffer.isBuffer(file.bytes) ? file.bytes : Buffer.from(file.bytes);
   res.setHeader("Content-Length", bytes.length);
   res.end(bytes);
-});
+}));
 
-inboxRouter.post("/nuevo", async (req, res) => {
+inboxRouter.post("/nuevo", asyncRoute(async (req, res) => {
   const waId = (req.body.wa_id ?? "").trim();
   const reason = (req.body.reason ?? "").trim();
   const templateName = (req.body.template_name ?? "").trim();
@@ -535,9 +558,9 @@ inboxRouter.post("/nuevo", async (req, res) => {
   }
 
   res.redirect(`/inbox/${encodeURIComponent(waId)}`);
-});
+}));
 
-inboxRouter.get("/:waId", async (req, res) => {
+inboxRouter.get("/:waId", asyncRoute(async (req, res) => {
   const convo = await getConversation(req.params.waId);
   if (!convo) return res.status(404).send("Conversación no encontrada.");
 
@@ -599,9 +622,9 @@ inboxRouter.get("/:waId", async (req, res) => {
        ${scrollToLatest}`
     )
   );
-});
+}));
 
-inboxRouter.post("/:waId/reply", async (req, res) => {
+inboxRouter.post("/:waId/reply", asyncRoute(async (req, res) => {
   const waId = req.params.waId;
   const text = (req.body.text ?? "").trim();
   if (!text) return res.redirect(`/inbox/${encodeURIComponent(waId)}`);
@@ -623,5 +646,31 @@ inboxRouter.post("/:waId/reply", async (req, res) => {
   }
 
   res.redirect(`/inbox/${encodeURIComponent(waId)}`);
+}));
+
+// Where asyncRoute sends everything it caught. Four arguments is what marks
+// this as error middleware to Express — don't drop the unused `next`, or it
+// silently becomes a normal handler and stops catching anything.
+//
+// The message is deliberately generic: err.message here can carry a
+// connection string or internal detail, and this page is one guessed
+// password away from a stranger. The real error goes to the logs.
+inboxRouter.use((err, _req, res, _next) => {
+  console.error("Error no atrapado en /inbox:", err);
+
+  // A media response may already be streaming when it fails; there is no
+  // status left to set, so just cut the connection.
+  if (res.headersSent) return res.end();
+
+  res
+    .status(500)
+    .send(
+      layout(
+        "Error",
+        `<p class="warn">Algo falló al cargar esta página. Suele ser la base de datos
+         despertándose — probá de nuevo en unos segundos.</p>
+         <p><a href="/inbox">← Volver a conversaciones</a></p>`
+      )
+    );
 });
 

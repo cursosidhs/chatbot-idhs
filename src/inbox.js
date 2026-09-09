@@ -48,6 +48,26 @@ function safeFilename(filename, fallback) {
   return cleaned || fallback;
 }
 
+// WhatsApp only sends an original `filename` for `document` messages — photos,
+// audio and video always arrive with it null, so the fallback name needs its
+// own extension. Without one, Content-Disposition has no extension either, and
+// the OS "Save as" dialog can't offer a matching file type (Windows shows
+// "All files" instead of "JPEG image", say) — this was reported as "can't save
+// images", not a missing feature.
+const MIME_EXTENSION_OVERRIDES = {
+  "image/jpeg": "jpg",
+  "audio/mpeg": "mp3",
+  "audio/mp4": "m4a",
+  "video/3gpp": "3gp",
+};
+
+function extensionFromMime(mimeType) {
+  if (MIME_EXTENSION_OVERRIDES[mimeType]) return `.${MIME_EXTENSION_OVERRIDES[mimeType]}`;
+  const subtype = String(mimeType ?? "").split("/")[1]?.split(";")[0];
+  const cleaned = subtype?.replace(/^x-/, "").replace(/[^a-z0-9]/gi, "");
+  return cleaned ? `.${cleaned}` : "";
+}
+
 // Hashing first means differing lengths don't throw and don't leak length
 // through timing, unlike comparing the raw strings.
 function safeEqual(a, b) {
@@ -431,7 +451,7 @@ inboxRouter.get("/media/:messageId", async (req, res) => {
   if (!file) return res.status(404).send("Archivo no encontrado.");
 
   const inline = isInlineSafe(file.mime_type);
-  const fallbackName = `archivo-${req.params.messageId}`;
+  const fallbackName = `archivo-${req.params.messageId}${extensionFromMime(file.mime_type)}`;
 
   // Anything not on the inline allowlist is downloaded as an opaque binary,
   // and nosniff stops the browser from second-guessing that decision.

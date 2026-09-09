@@ -257,6 +257,33 @@ const autoRefreshScript = `
 })();
 </script>`;
 
+// Enter sends the reply (Shift+Enter still makes a newline), and the submit
+// button is disabled the instant a real submit fires — whether that submit
+// came from Enter or from the click itself — so a second Enter or a fast
+// double-click can't fire the send twice. Disabling on click alone wouldn't
+// be enough: it wouldn't cover the Enter path, and doing it in the submit
+// handler catches both the same way.
+const replyFormScript = `
+<script>
+(function () {
+  var form = document.querySelector("form.reply-form");
+  if (!form) return;
+  var textarea = form.querySelector("textarea");
+  var button = form.querySelector("button[type=submit]");
+
+  form.addEventListener("submit", function () {
+    button.disabled = true;
+  });
+
+  textarea.addEventListener("keydown", function (e) {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      if (!button.disabled) button.click();
+    }
+  });
+})();
+</script>`;
+
 function layout(title, body) {
   return `<!doctype html>
 <html lang="es">
@@ -562,11 +589,12 @@ inboxRouter.get("/:waId", async (req, res) => {
     ? `<p class="warn">Pasaron más de 24 h desde el último mensaje del cliente.
        WhatsApp no permite responder texto libre fuera de esa ventana: haría falta
        una plantilla aprobada (con costo), que este panel todavía no envía.</p>`
-    : `<form method="post" action="/inbox/${encodeURIComponent(convo.wa_id)}/reply">
+    : `<form class="reply-form" method="post" action="/inbox/${encodeURIComponent(convo.wa_id)}/reply">
          <textarea name="text" required maxlength="4000" placeholder="Escribí tu respuesta…"></textarea>
          <button type="submit">Enviar</button>
        </form>
-       <p class="meta">Al responder, el bot deja de contestar en esta conversación.</p>`;
+       <p class="meta">Al responder, el bot deja de contestar en esta conversación.</p>
+       ${replyFormScript}`;
 
   // Opt-out only gates future outbound-template sends from "Nuevo contacto"
   // — it never blocks a normal reply here, since the person may still be

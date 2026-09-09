@@ -120,8 +120,7 @@ WhatsApp no deja mandar texto libre a alguien que nunca escribió — solo una p
 
 - **Qué pasa al enviar**: sale la plantilla vía `sendTemplateMessage` (misma API, mismo token que el resto del bot), se crea la conversación ya marcada como `handed_off = true` — el bot no tiene contexto sobre "pago pendiente" o "clase no vista", así que cualquier respuesta la atiende un humano, nunca Gemini —, y el envío queda registrado en la tabla `outbound_contacts` (motivo, plantilla, fecha).
 - **Si Meta rechaza el envío** (plantilla mal escrita, no aprobada, etc.), no queda nada creado — ni conversación ni registro — así no hay conversaciones fantasma de intentos fallidos.
-- **Recordar dos veces no es opt-out**: no hay límite de cantidad de plantillas Utility que le puedas mandar a la misma persona por el mismo motivo (a diferencia de Marketing, que sí tiene tope). Cada envío queda como una fila separada en `outbound_contacts`.
-- **Opt-out**: si alguien pide que no le escriban más, el botón "Marcar 'no contactar de nuevo'" en el detalle de la conversación lo marca de forma permanente. A partir de ahí, `/inbox/nuevo` rechaza (409) cualquier intento de mandarle una plantilla nueva — pero **no** bloquea que el empleado le responda normalmente si la persona escribe por su cuenta; el opt-out es sobre no *iniciar* contacto, no sobre cortar una conversación en curso.
+- **Recordar dos veces no tiene límite técnico**: no hay tope de cantidad de plantillas Utility que le puedas mandar a la misma persona por el mismo motivo (a diferencia de Marketing, que sí tiene tope). Cada envío queda como una fila separada en `outbound_contacts`.
 
 ## Fotos y PDFs que manda el cliente
 

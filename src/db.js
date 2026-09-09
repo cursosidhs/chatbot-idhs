@@ -44,11 +44,6 @@ export async function initSchema() {
     -- falls back to the generic "Empleado" label when it's missing.
     ALTER TABLE messages ADD COLUMN IF NOT EXISTS author TEXT;
 
-    -- Someone asked not to be contacted again via an outbound template.
-    -- Checked before every "Nuevo contacto" send; never touched by normal
-    -- inbound/reply traffic.
-    ALTER TABLE conversations ADD COLUMN IF NOT EXISTS opted_out BOOLEAN NOT NULL DEFAULT FALSE;
-
     -- Whether the "we'll get back to you between 10 and 17" notice already
     -- went out this session, so five messages past the window don't produce
     -- five identical replies. Reset when a new session starts.

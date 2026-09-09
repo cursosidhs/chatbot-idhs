@@ -6,11 +6,9 @@ import {
   appendAgentMessage,
   getConversation,
   getMedia,
-  isOptedOut,
   listConversations,
   logOutboundContact,
   registerOutboundContact,
-  setOptedOut,
 } from "./conversationStore.js";
 
 // Meta only lets you send free-form messages within 24h of the customer's
@@ -399,9 +397,8 @@ inboxRouter.get("/", async (req, res) => {
       const badge = c.handed_off
         ? '<span class="badge badge-agent">🧑‍💼 Empleado</span>'
         : '<span class="badge badge-bot">🤖 Bot</span>';
-      const optOutBadge = c.opted_out ? '<span class="badge badge-warn">no contactar</span>' : "";
       return `<li class="${statusClass}"><a href="/inbox/${encodeURIComponent(c.wa_id)}">
-        <strong>${escapeHtml(c.wa_id)}</strong>${badge}${optOutBadge}
+        <strong>${escapeHtml(c.wa_id)}</strong>${badge}
         <div class="meta">${escapeHtml(formatTime(c.last_message_at))}</div>
         <div>${escapeHtml(preview.slice(0, 120))}</div>
       </a></li>`;
@@ -518,18 +515,6 @@ inboxRouter.post("/nuevo", async (req, res) => {
       );
   }
 
-  if (await isOptedOut(waId)) {
-    return res
-      .status(409)
-      .send(
-        layout(
-          "Nuevo contacto",
-          `<p class="warn">${escapeHtml(waId)} pidió no recibir más mensajes — no se envió nada.</p>
-           <p><a href="/inbox">← Volver</a></p>`
-        )
-      );
-  }
-
   try {
     await sendTemplateMessage(waId, templateName, params);
     await registerOutboundContact(waId);
@@ -596,18 +581,6 @@ inboxRouter.get("/:waId", async (req, res) => {
        <p class="meta">Al responder, el bot deja de contestar en esta conversación.</p>
        ${replyFormScript}`;
 
-  // Opt-out only gates future outbound-template sends from "Nuevo contacto"
-  // — it never blocks a normal reply here, since the person may still be
-  // mid-conversation.
-  const optOut = convo.opted_out
-    ? `<p class="meta">🚫 Pidió no recibir más mensajes iniciados por nosotros.</p>
-       <form method="post" action="/inbox/${encodeURIComponent(convo.wa_id)}/opt-in">
-         <button type="submit">Deshacer "no contactar de nuevo"</button>
-       </form>`
-    : `<form method="post" action="/inbox/${encodeURIComponent(convo.wa_id)}/opt-out">
-         <button type="submit">Marcar "no contactar de nuevo"</button>
-       </form>`;
-
   // Jump to the newest message (and the reply box right under it) instead
   // of landing at the top of a long thread — otherwise every auto-refresh
   // would scroll the employee away from what they were reading.
@@ -623,7 +596,6 @@ inboxRouter.get("/:waId", async (req, res) => {
        </div>
        ${messages}
        ${form}
-       ${optOut}
        ${scrollToLatest}`
     )
   );
@@ -653,12 +625,3 @@ inboxRouter.post("/:waId/reply", async (req, res) => {
   res.redirect(`/inbox/${encodeURIComponent(waId)}`);
 });
 
-inboxRouter.post("/:waId/opt-out", async (req, res) => {
-  await setOptedOut(req.params.waId, true);
-  res.redirect(`/inbox/${encodeURIComponent(req.params.waId)}`);
-});
-
-inboxRouter.post("/:waId/opt-in", async (req, res) => {
-  await setOptedOut(req.params.waId, false);
-  res.redirect(`/inbox/${encodeURIComponent(req.params.waId)}`);
-});

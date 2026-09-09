@@ -196,18 +196,6 @@ export async function logOutboundContact(waId, reason, templateName) {
   );
 }
 
-export async function isOptedOut(waId) {
-  const { rows } = await pool.query(
-    "SELECT opted_out FROM conversations WHERE wa_id = $1",
-    [waId]
-  );
-  return rows[0]?.opted_out ?? false;
-}
-
-export async function setOptedOut(waId, value = true) {
-  await pool.query("UPDATE conversations SET opted_out = $2 WHERE wa_id = $1", [waId, value]);
-}
-
 // `%` and `_` are wildcards to ILIKE, so a search for "50%" or "curso_1"
 // would silently match far more than the employee typed. Escaping them
 // (and the escape character itself) keeps the search literal.
@@ -224,7 +212,7 @@ export async function listConversations({ limit = 50, search = "" } = {}) {
 
   const { rows } = await pool.query(
     `
-    SELECT c.wa_id, c.last_message_at, c.handed_off, c.opted_out,
+    SELECT c.wa_id, c.last_message_at, c.handed_off,
            m.text AS last_text, m.role AS last_role, m.author AS last_author
     FROM conversations c
     LEFT JOIN LATERAL (
@@ -253,7 +241,7 @@ export async function listConversations({ limit = 50, search = "" } = {}) {
 export async function getConversation(waId) {
   const [convo, messages] = await Promise.all([
     pool.query(
-      "SELECT wa_id, first_message_at, last_message_at, handed_off, opted_out FROM conversations WHERE wa_id = $1",
+      "SELECT wa_id, first_message_at, last_message_at, handed_off FROM conversations WHERE wa_id = $1",
       [waId]
     ),
     pool.query(

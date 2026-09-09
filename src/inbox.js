@@ -600,7 +600,10 @@ inboxRouter.get("/:waId", async (req, res) => {
   // — it never blocks a normal reply here, since the person may still be
   // mid-conversation.
   const optOut = convo.opted_out
-    ? `<p class="meta">🚫 Pidió no recibir más mensajes iniciados por nosotros.</p>`
+    ? `<p class="meta">🚫 Pidió no recibir más mensajes iniciados por nosotros.</p>
+       <form method="post" action="/inbox/${encodeURIComponent(convo.wa_id)}/opt-in">
+         <button type="submit">Deshacer "no contactar de nuevo"</button>
+       </form>`
     : `<form method="post" action="/inbox/${encodeURIComponent(convo.wa_id)}/opt-out">
          <button type="submit">Marcar "no contactar de nuevo"</button>
        </form>`;
@@ -652,5 +655,10 @@ inboxRouter.post("/:waId/reply", async (req, res) => {
 
 inboxRouter.post("/:waId/opt-out", async (req, res) => {
   await setOptedOut(req.params.waId, true);
+  res.redirect(`/inbox/${encodeURIComponent(req.params.waId)}`);
+});
+
+inboxRouter.post("/:waId/opt-in", async (req, res) => {
+  await setOptedOut(req.params.waId, false);
   res.redirect(`/inbox/${encodeURIComponent(req.params.waId)}`);
 });

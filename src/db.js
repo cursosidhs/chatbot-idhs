@@ -54,6 +54,13 @@ export async function initSchema() {
     -- five identical replies. Reset when a new session starts.
     ALTER TABLE conversations ADD COLUMN IF NOT EXISTS after_hours_notified BOOLEAN NOT NULL DEFAULT FALSE;
 
+    -- When an employee last replied from /inbox. Used only to keep a
+    -- handoff sticky across the session-gap check in registerInboundMessage
+    -- — a slow-to-answer customer shouldn't undo a handoff an employee is
+    -- actively working, even though last_message_at (customer-only, by
+    -- design) looks stale. NULL for conversations no employee has touched.
+    ALTER TABLE conversations ADD COLUMN IF NOT EXISTS last_agent_message_at TIMESTAMPTZ;
+
     -- Audit log of every outbound template send (one row per send, so
     -- reminding the same person twice is two rows, not an overwrite).
     CREATE TABLE IF NOT EXISTS outbound_contacts (

@@ -17,6 +17,16 @@ function toGeminiRole(role) {
 // arriving at once can't race into two different sessions. A gap longer
 // than sessionGapMs resets firstMessageAt and clears handedOff, which is
 // what makes the next message count as a brand new conversation.
+//
+// The gap is measured against last_message_at (customer-only) AND, when
+// set, last_agent_message_at — a new session only starts once BOTH are
+// stale. Without the second check, an employee who replies to a slow
+// customer (say, 10h after their last message) gets undone the moment that
+// customer answers: last_message_at alone would already be past the gap,
+// so the reply would look like the start of a fresh, un-handed-off session
+// even though the employee is actively on it. This was a real bug, caught
+// via an actual conversation transcript where the bot replied minutes after
+// an employee confirmed a payment.
 export async function registerInboundMessage(waId, now = new Date()) {
   const gapSeconds = Math.floor(config.sessionGapMs / 1000);
 
@@ -28,12 +38,18 @@ export async function registerInboundMessage(waId, now = new Date()) {
       last_message_at = $2,
       first_message_at = CASE
         WHEN $2 - conversations.last_message_at > make_interval(secs => $3)
+         AND (conversations.last_agent_message_at IS NULL
+              OR $2 - conversations.last_agent_message_at > make_interval(secs => $3))
         THEN $2 ELSE conversations.first_message_at END,
       handed_off = CASE
         WHEN $2 - conversations.last_message_at > make_interval(secs => $3)
+         AND (conversations.last_agent_message_at IS NULL
+              OR $2 - conversations.last_agent_message_at > make_interval(secs => $3))
         THEN FALSE ELSE conversations.handed_off END,
       after_hours_notified = CASE
         WHEN $2 - conversations.last_message_at > make_interval(secs => $3)
+         AND (conversations.last_agent_message_at IS NULL
+              OR $2 - conversations.last_agent_message_at > make_interval(secs => $3))
         THEN FALSE ELSE conversations.after_hours_notified END
     RETURNING wa_id, first_message_at, last_message_at, handed_off, after_hours_notified
     `,
@@ -130,8 +146,10 @@ export async function appendBotMessage(waId, text) {
 // rest of this session (same effect markHandedOff has for coexistence
 // echoes). Deliberately does NOT touch last_message_at — that column
 // tracks the customer's last message, which is what both the session-gap
-// rule and the 24h billing window are measured from.
-export async function appendAgentMessage(waId, text, author = null) {
+// rule and the 24h billing window are measured from. last_agent_message_at
+// is the separate column that keeps the handoff itself alive across that
+// same session-gap check — see registerInboundMessage.
+export async function appendAgentMessage(waId, text, author = null, now = new Date()) {
   // Needs a single checked-out client: pool.query() can hand each
   // statement a different connection, which would break the transaction.
   const client = await pool.connect();
@@ -142,8 +160,8 @@ export async function appendAgentMessage(waId, text, author = null) {
       [waId, text, author]
     );
     await client.query(
-      "UPDATE conversations SET handed_off = TRUE WHERE wa_id = $1",
-      [waId]
+      "UPDATE conversations SET handed_off = TRUE, last_agent_message_at = $2 WHERE wa_id = $1",
+      [waId, now]
     );
     await client.query("COMMIT");
   } catch (err) {
